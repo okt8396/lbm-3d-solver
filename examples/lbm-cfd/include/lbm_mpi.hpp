@@ -1,5 +1,5 @@
-#ifndef _LBMD3Q15_MPI_HPP_
-#define _LBMD3Q15_MPI_HPP_
+#ifndef _LBMDQ_MPI_HPP_
+#define _LBMDQ_MPI_HPP_
 
 #include <array>
 #include <cmath>
@@ -69,11 +69,29 @@ static const double wD3Q15[15] = {
 	1.0/72.0, 1.0/72.0, 1.0/72.0, 1.0/72.0, 1.0/72.0, 1.0/72.0, 1.0/72.0, 1.0/72.0
 };
 
+// D3Q19 discrete velocities and weights
+static const int cD3Q19[19][3] = {
+    {0,0,0}, {1,0,0}, {-1,0,0},
+    {0,1,0}, {0,-1,0}, {0,0,1},
+    {0,0,-1}, {1,1,0}, {-1,1,0},
+    {1,-1,0}, {-1,-1,0}, {1,0,1},
+    {-1,0,1}, {1,0,-1}, {-1,0,-1},
+    {0,1,1}, {0,-1,1}, {0,1,-1}, {0,-1,-1}
+};
+
+static const double wD3Q19[19] = {
+    1.0/3.0,
+    1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0, 1.0/18.0,
+    1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0,
+    1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0
+};
+
 // Lattice-Boltzman Methods CFD simulation
-class LbmD3Q15
+class LbmDQ
 {
     public:
         enum FluidProperty {None, Density, Speed, Vorticity};
+	enum LatticeType {D3Q15, D3Q19};
 
     private:
         enum Neighbor {NeighborN, NeighborE, NeighborS, NeighborW, NeighborNE, NeighborNW, NeighborSE, NeighborSW, NeighborUp, NeighborDown};
@@ -99,8 +117,11 @@ class LbmD3Q15
         uint32_t *rank_local_size;
         uint32_t *rank_local_start;
         double speed_scale;
-	static constexpr int Q = 15;
-        float *f;
+        int Q;
+	LatticeType lattice_type;
+	const int (*c)[3];
+	const double *w;
+	float *f;
         float *density;
         float *velocity_x;
         float *velocity_y;
@@ -128,7 +149,7 @@ class LbmD3Q15
 	MPI_Datatype faceNW, faceSE;
 
         // Add missing member variables
-        float *f_0, *f_1, *f_2, *f_3, *f_4, *f_5, *f_6, *f_7, *f_8, *f_9, *f_10, *f_11, *f_12, *f_13, *f_14;
+        float *f_0, *f_1, *f_2, *f_3, *f_4, *f_5, *f_6, *f_7, *f_8, *f_9, *f_10, *f_11, *f_12, *f_13, *f_14, *f_15, *f_16, *f_17, *f_18;
         float *dbl_arrays;
         uint32_t block_width, block_height, block_depth;
 	float **fPtr;
@@ -155,8 +176,8 @@ class LbmD3Q15
         void getClosestFactors3(int value, int *factor_1, int *factor_2, int *factor_3);
 
     public:
-        LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale, int task_id, int num_tasks);
-        ~LbmD3Q15();
+        LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int task_id, int num_tasks, LatticeType type);
+        ~LbmDQ();
 
         void initBarrier(std::vector<Barrier*> barriers);
         void initFluid(double physical_speed);
@@ -237,12 +258,25 @@ class LbmD3Q15
 };
 
 // constructor
-LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale, int task_id, int num_tasks)
+LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int task_id, int num_tasks, LatticeType type)
 {
     rank = task_id;
     num_ranks = num_tasks;
     speed_scale = scale;
     stored_property = None;
+    lattice_type = type;
+
+    // set up lattice model
+    if (lattice_type == D3Q15) {
+	Q = 15;
+	c = cD3Q15;
+	w = wD3Q19;
+    }
+    else {
+	Q = 19;
+	c = cD3Q19;
+	w = wD3Q19;
+    }
 
     // split up problem space
     int n_x, n_y, n_z, col, row, layer, chunk_w, chunk_h, chunk_d, extra_w, extra_h, extra_d;
@@ -427,8 +461,8 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     size_t total_memory = 0;
 
     // allocate all float arrays at once
-    dbl_arrays = new float[21 * size];
-    total_memory += 21 * size * sizeof(float);
+    dbl_arrays = new float[(Q + 6) * size];
+    total_memory += (Q + 6) * size * sizeof(float);
     printMemoryUsage("Main arrays", total_memory);
 
     // set array pointers
@@ -447,6 +481,12 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     f_12       = dbl_arrays + (12*size);
     f_13       = dbl_arrays + (13*size);
     f_14       = dbl_arrays + (14*size);
+    if (Q == 19) {
+	f_15 = dbl_arrays + (15*size);
+	f_16 = dbl_arrays + (16*size);
+	f_17 = dbl_arrays + (17*size);
+	f_18 = dbl_arrays + (18*size);
+    }
 
     // initialize f pointer to point to f_0
     f = f_0;
@@ -467,13 +507,19 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     fPtr[12] = f_12;
     fPtr[13] = f_13;
     fPtr[14] = f_14;
+    if (Q == 19) {
+	fPtr[15] = f_15;
+	fPtr[16] = f_16;
+	fPtr[17] = f_17;
+	fPtr[18] = f_18;
+    }
 
-    density    = dbl_arrays + (15*size);
-    velocity_x = dbl_arrays + (16*size);
-    velocity_y = dbl_arrays + (17*size);
-    velocity_z = dbl_arrays + (18*size);
-    vorticity  = dbl_arrays + (19*size);
-    speed      = dbl_arrays + (20*size);
+    density    = dbl_arrays + (Q*size);
+    velocity_x = dbl_arrays + ((Q+1)*size);
+    velocity_y = dbl_arrays + ((Q+2)*size);
+    velocity_z = dbl_arrays + ((Q+3)*size);
+    vorticity  = dbl_arrays + ((Q+4)*size);
+    speed      = dbl_arrays + ((Q+5)*size);
     
     // allocate boolean array
     barrier = new bool[size];
@@ -506,7 +552,7 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
 }
 
 // destructor
-LbmD3Q15::~LbmD3Q15()
+LbmDQ::~LbmDQ()
 {
     //if (rank == 0) std::cout << "Starting destructor..." << std::endl;
 
@@ -589,7 +635,7 @@ LbmD3Q15::~LbmD3Q15()
 }
 
 // initialize barrier based on selected type
-void LbmD3Q15::initBarrier(std::vector<Barrier*> barriers)
+void LbmDQ::initBarrier(std::vector<Barrier*> barriers)
 {
 	// clear barrier to all `false`
 	memset(barrier, 0, dim_x * dim_y * dim_z);
@@ -631,7 +677,7 @@ void LbmD3Q15::initBarrier(std::vector<Barrier*> barriers)
 }
 	
 // initialize fluid
-void LbmD3Q15::initFluid(double physical_speed)
+void LbmDQ::initFluid(double physical_speed)
 {
     int i, j, k;
     double speed = speed_scale * physical_speed;
@@ -648,7 +694,7 @@ void LbmD3Q15::initFluid(double physical_speed)
 	}
 }
 
-void LbmD3Q15::updateFluid(double physical_speed)
+void LbmDQ::updateFluid(double physical_speed)
 {
     int i; int j; int k;
     double speed = speed_scale * physical_speed;
@@ -682,7 +728,7 @@ void LbmD3Q15::updateFluid(double physical_speed)
 }
 
 // particle collision
-void LbmD3Q15::collide(double viscosity)
+void LbmDQ::collide(double viscosity)
 {
 	//if (rank == 0) std::cout << "Starting collide (viscosity=" << viscosity << ")" << std::endl;
 	int i, j, row, idx;
@@ -696,13 +742,13 @@ void LbmD3Q15::collide(double viscosity)
 			idx = row + i;
 
 			double rho = 0.0, ux = 0.0, uy = 0.0, uz = 0.0;
-			for (int d = 0; d < 15; ++d)
+			for (int d = 0; d < Q; ++d)
 			{
 				double fv = fPtr[d][idx];
 				rho += fv;
-				ux  += fv * cD3Q15[d][0];
-				uy  += fv * cD3Q15[d][1];
-				uz  += fv * cD3Q15[d][2];
+				ux  += fv * c[d][0];
+				uy  += fv * c[d][1];
+				uz  += fv * c[d][2];
 			}
 			density[idx] = rho;
 			ux /= rho; uy /= rho; uz /= rho;
@@ -711,10 +757,10 @@ void LbmD3Q15::collide(double viscosity)
 			velocity_z[idx] = uz;
 
 			double usqr = ux*ux + uy*uy + uz*uz;
-			for (int d = 0; d < 15; ++d)
+			for (int d = 0; d < Q; ++d)
 			{
-				double cu = 3.0 * (cD3Q15[d][0]*ux + cD3Q15[d][1]*uy + cD3Q15[d][2]*uz);
-				double feq = wD3Q15[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usqr);
+				double cu = 3.0 * (c[d][0]*ux + c[d][1]*uy + c[d][2]*uz);
+				double feq = w[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usqr);
 				fPtr[d][idx] += omega * (feq - fPtr[d][idx]);
 			}
 		}
@@ -723,7 +769,7 @@ void LbmD3Q15::collide(double viscosity)
 }
 	
 // particle streaming
-void LbmD3Q15::stream()
+void LbmDQ::stream()
 {
 	//if (rank == 0) std::cout << "Starting stream" << std::endl;
 	
@@ -736,10 +782,10 @@ void LbmD3Q15::stream()
 		for (int j = start_y; j < dim_y - start_y; ++j) {
 			for (int i = start_x; i < dim_x - start_x; ++i) {
 				int idx = idx3D(i, j, k);
-				for (int d = 0; d < 15; ++d) {
-					int ni = i + cD3Q15[d][0];
-					int nj = j + cD3Q15[d][1];
-					int nk = k + cD3Q15[d][2];
+				for (int d = 0; d < Q; ++d) {
+					int ni = i + c[d][0];
+					int nj = j + c[d][1];
+					int nk = k + c[d][2];
 					int nidx = idx3D(ni, nj, nk);
 
 					f_at(d, ni, nj, nk) = f_Old[d * slice + idx];
@@ -753,7 +799,7 @@ void LbmD3Q15::stream()
 }
 
 // particle streaming bouncing back off of barriers
-void LbmD3Q15::bounceBackStream()
+void LbmDQ::bounceBackStream()
 {
 	//if (rank == 0) std::cout << "Starting bounceBackStream" << std::endl;
 	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
@@ -771,9 +817,9 @@ void LbmD3Q15::bounceBackStream()
 
 				for (int d = 1; d < Q; ++d)
 				{
-					int ni = i + cD3Q15[d][0];
-					int nj = j + cD3Q15[d][1];
-					int nk = k + cD3Q15[d][2];
+					int ni = i + c[d][0];
+					int nj = j + c[d][1];
+					int nk = k + c[d][2];
 					int nidx = idx3D(ni, nj, nk);
 
 					if (barrier[nidx])
@@ -781,7 +827,7 @@ void LbmD3Q15::bounceBackStream()
 						int od = 0;
 						for (int dd = 1; dd < Q; ++dd)
 						{
-							if (cD3Q15[dd][0] == -cD3Q15[d][0] && cD3Q15[dd][1] == -cD3Q15[d][1] && cD3Q15[dd][2] == -cD3Q15[d][2])
+							if (c[dd][0] == -c[d][0] && c[dd][1] == -c[d][1] && c[dd][2] == -c[d][2])
 							{
 								od = dd;
 								break;
@@ -799,7 +845,7 @@ void LbmD3Q15::bounceBackStream()
 }
 	
 // check if simulation has become unstable (if so, more time steps are required)
-bool LbmD3Q15::checkStability()
+bool LbmDQ::checkStability()
 {
     int i, k, idx;
     bool stable = true;
@@ -819,7 +865,7 @@ bool LbmD3Q15::checkStability()
 }
 
 // compute speed (magnitude of velocity vector)
-void LbmD3Q15::computeSpeed()
+void LbmDQ::computeSpeed()
 {
     int i, j, k, idx;
     for (k = 1; k < dim_z - 1; k++)
@@ -836,7 +882,7 @@ void LbmD3Q15::computeSpeed()
 }
 
 // compute vorticity (rotational velocity)
-void LbmD3Q15::computeVorticity()
+void LbmDQ::computeVorticity()
 {
     int i; int j; int k; int idx;
 
@@ -861,7 +907,7 @@ void LbmD3Q15::computeVorticity()
 }
 
 // gather all data on rank 0
-void LbmD3Q15::gatherDataOnRank0(FluidProperty property)
+void LbmDQ::gatherDataOnRank0(FluidProperty property)
 {
     float *send_buf = NULL;
     bool *bsend_buf = barrier;
@@ -903,116 +949,116 @@ void LbmD3Q15::gatherDataOnRank0(FluidProperty property)
 }
 
 // get width of sub-area this task owns (including ghost cells)
-uint32_t LbmD3Q15::getDimX()
+uint32_t LbmDQ::getDimX()
 {
     return dim_x;
 }
 
 // get width of sub-area this task owns (including ghost cells)
-uint32_t LbmD3Q15::getDimY()
+uint32_t LbmDQ::getDimY()
 {
     return dim_y;
 }
 
 // get width of sub-area this task owns (including ghost cells)
-uint32_t LbmD3Q15::getDimZ()
+uint32_t LbmDQ::getDimZ()
 {
     return dim_z;
 }
 
 // get width of total area of simulation
-uint32_t LbmD3Q15::getTotalDimX()
+uint32_t LbmDQ::getTotalDimX()
 {
     return total_x;
 }
 
 // get width of total area of simulation
-uint32_t LbmD3Q15::getTotalDimY()
+uint32_t LbmDQ::getTotalDimY()
 {
     return total_y;
 }
 
 // get width of total area of simulation
-uint32_t LbmD3Q15::getTotalDimZ()
+uint32_t LbmDQ::getTotalDimZ()
 {
     return total_z;
 }
 
 // get x offset into overall domain where this sub-area esxists
-uint32_t LbmD3Q15::getOffsetX()
+uint32_t LbmDQ::getOffsetX()
 {
     return offset_x;
 }
 
 // get y offset into overall domain where this sub-area esxists
-uint32_t LbmD3Q15::getOffsetY()
+uint32_t LbmDQ::getOffsetY()
 {
     return offset_y;
 }
 
 // get z offset into overall domain where this sub-area esxists
-uint32_t LbmD3Q15::getOffsetZ()
+uint32_t LbmDQ::getOffsetZ()
 {
     return offset_z;
 }
 
 // get x start for valid data (0 if no ghost cell on left, 1 if there is a ghost cell on left)
-uint32_t LbmD3Q15::getStartX()
+uint32_t LbmDQ::getStartX()
 {
     return start_x;
 }
 
 // get y start for valid data (0 if no ghost cell on top, 1 if there is a ghost cell on top)
-uint32_t LbmD3Q15::getStartY()
+uint32_t LbmDQ::getStartY()
 {
     return start_y;
 }
 
 // get z start for valid data (0 if no ghost cell on top, 1 if there is a ghost cell on top)
-uint32_t LbmD3Q15::getStartZ()
+uint32_t LbmDQ::getStartZ()
 {
     return start_z;
 }
 
 // get width of sub-area this task is responsible for (excluding ghost cells)
-uint32_t LbmD3Q15::getSizeX()
+uint32_t LbmDQ::getSizeX()
 {
     return num_x;
 }
 
 // get width of sub-area this task is responsible for (excluding ghost cells)
-uint32_t LbmD3Q15::getSizeY()
+uint32_t LbmDQ::getSizeY()
 {
     return num_y;
 }
 
 // get width of sub-area this task is responsible for (excluding ghost cells)
-uint32_t LbmD3Q15::getSizeZ()
+uint32_t LbmDQ::getSizeZ()
 {
     return num_z;
 }
 
 // get the local width and height of a particular rank's data
-uint32_t* LbmD3Q15::getRankLocalSize(int rank)
+uint32_t* LbmDQ::getRankLocalSize(int rank)
 {
     return rank_local_size + (2 * rank);
 }
 
 // get the local x and y start of a particular rank's data
-uint32_t* LbmD3Q15::getRankLocalStart(int rank)
+uint32_t* LbmDQ::getRankLocalStart(int rank)
 {
     return rank_local_start + (2 * rank);
 }
 
 // get barrier array
-bool* LbmD3Q15::getBarrier()
+bool* LbmDQ::getBarrier()
 {
     if (rank != 0) return NULL;
     return brecv_buf;
 }
 
 // private - set fluid equalibrium
-void LbmD3Q15::setEquilibrium(int x, int y, int z, double new_velocity_x, double new_velocity_y, double new_velocity_z, double new_density)
+void LbmDQ::setEquilibrium(int x, int y, int z, double new_velocity_x, double new_velocity_y, double new_velocity_z, double new_density)
 {
 	int idx = idx3D(x, y, z);
 
@@ -1028,13 +1074,13 @@ void LbmD3Q15::setEquilibrium(int x, int y, int z, double new_velocity_x, double
 
 	for (int d = 0; d < Q; ++d)
 	{
-		double cu = 3.0 * (cD3Q15[d][0] * ux + cD3Q15[d][1] * uy + cD3Q15[d][2] * uz);
-		f_at(d, x, y, z) = wD3Q15[d] * new_density * (1.0 + cu + 0.5*cu*cu - 1.5*usq);
+		double cu = 3.0 * (c[d][0] * ux + c[d][1] * uy + c[d][2] * uz);
+		f_at(d, x, y, z) = w[d] * new_density * (1.0 + cu + 0.5*cu*cu - 1.5*usq);
 	}
 }
 
 // private - get 3 factors of a given number that are closest to each other
-void LbmD3Q15::getClosestFactors3(int value, int *factor_1, int *factor_2, int *factor_3)
+void LbmDQ::getClosestFactors3(int value, int *factor_1, int *factor_2, int *factor_3)
 {
     int test_num = (int)cbrt(value);
     while (test_num > 0 && value % test_num != 0)
@@ -1054,7 +1100,7 @@ void LbmD3Q15::getClosestFactors3(int value, int *factor_1, int *factor_2, int *
 }
 
 // private - exchange boundary information between MPI ranks
-void LbmD3Q15::exchangeBoundaries()
+void LbmDQ::exchangeBoundaries()
 {
     //if (rank == 0) std::cout << "Starting exchangeBoundaries" << std::endl;
 
@@ -1177,4 +1223,4 @@ void LbmD3Q15::exchangeBoundaries()
     //if (rank == 0) std::cout << "Completed exchangeBoundaries" << std::endl;
 }
 
-#endif // _LBMD3Q15_MPI_HPP_
+#endif // _LBMDQ_MPI_HPP_
