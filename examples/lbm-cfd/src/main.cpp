@@ -42,9 +42,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 600;
-    uint32_t dim_y = 240;
-    uint32_t dim_z = 240;
+    uint32_t dim_x = 30;
+    uint32_t dim_y = 12;
+    uint32_t dim_z = 12;
     uint32_t time_steps = 20000;
 
     if (rank == 0) std::cout << "LBM-CFD> running with " << num_ranks << " processes" << std::endl;
@@ -167,9 +167,29 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         }
         
         // perform one iteration of the simulation
-        lbm->collide(simulation_viscosity);
-        lbm->stream();
+        //if (rank == 0 && t % 100 == 0) {
+        //    std::cout << "Step " << t << ": Starting collide" << std::endl;
+        //}
+	lbm->collide(simulation_viscosity);
+        
+        //if (rank == 0 && t % 100 == 0) {
+        //    std::cout << "Step " << t << ": Starting stream" << std::endl;
+        //}	
+	lbm->stream();
+
+	//if (rank == 0 && t % 100 == 0) {
+        //    std::cout << "Step " << t << ": Starting bounceBackStream" << std::endl;
+        //}
         lbm->bounceBackStream();
+
+	//if (rank == 0 && t % 100 == 0) {
+        //    std::cout << "Step " << t << ": Exchanging boundaries" << std::endl;
+        //}
+        lbm->exchangeBoundaries();
+
+	//if (rank == 0 && t % 100 == 0) {
+        //    std::cout << "Step " << t << ": Completed iteration" << std::endl;
+        //}
     }
 
     // Clean up    

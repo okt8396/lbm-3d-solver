@@ -8,7 +8,6 @@
 #include <vector>
 #include <mpi.h>
 
-
 // Helper class for creating barriers
 class Barrier
 {
@@ -101,16 +100,16 @@ class LbmD3Q15
         uint32_t *rank_local_start;
         double speed_scale;
 	static constexpr int Q = 15;
-        double *f;
-        double *density;
-        double *velocity_x;
-        double *velocity_y;
-	double *velocity_z;
-        double *vorticity;
-        double *speed;
+        float *f;
+        float *density;
+        float *velocity_x;
+        float *velocity_y;
+	float *velocity_z;
+        float *vorticity;
+        float *speed;
         bool *barrier;
         FluidProperty stored_property;
-        double *recv_buf;
+        float *recv_buf;
         bool *brecv_buf;
         int neighbors[10];
         MPI_Datatype columns_2d[4];
@@ -129,23 +128,31 @@ class LbmD3Q15
 	MPI_Datatype faceNW, faceSE;
 
         // Add missing member variables
-        double *f_0, *f_1, *f_2, *f_3, *f_4, *f_5, *f_6, *f_7, *f_8, *f_9, *f_10, *f_11, *f_12, *f_13, *f_14;
-        double *dbl_arrays;
+        float *f_0, *f_1, *f_2, *f_3, *f_4, *f_5, *f_6, *f_7, *f_8, *f_9, *f_10, *f_11, *f_12, *f_13, *f_14;
+        float *dbl_arrays;
         uint32_t block_width, block_height, block_depth;
-	double **fPtr;
+	float **fPtr;
+
+	// Helper function to print memory usage
+        void printMemoryUsage(const char* label, size_t bytes) {
+            double mb = bytes / (1024.0 * 1024.0);
+            double gb = mb / 1024.0;
+            //if (rank == 0) {
+            //    std::cout << "Memory usage - " << label << ": " << mb << " MB (" << gb << " GB)" << std::endl;
+            //}
+        }
 
 	// Helper functions
         inline int idx3D(int x, int y, int z) const {
             return x + dim_x * (y + dim_y * z);
         }
 
-        inline double& f_at(int d, int x, int y, int z) const {
+        inline float& f_at(int d, int x, int y, int z) const {
             return fPtr[d][idx3D(x, y, z)];
         }
 
         void setEquilibrium(int x, int y, int z, double new_velocity_x, double new_velocity_y, double new_velocity_z, double new_density);
         void getClosestFactors3(int value, int *factor_1, int *factor_2, int *factor_3);
-        void exchangeBoundaries();
 
     public:
         LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale, int task_id, int num_tasks);
@@ -161,7 +168,8 @@ class LbmD3Q15
         void computeSpeed();
         void computeVorticity();
         void gatherDataOnRank0(FluidProperty property);
-        uint32_t getDimX();
+        void exchangeBoundaries();
+	uint32_t getDimX();
         uint32_t getDimY();
 	uint32_t getDimZ();
         uint32_t getTotalDimX();
@@ -187,42 +195,42 @@ class LbmD3Q15
 	static constexpr int TAG_B  = 105;
 
 	// Local data access
-        inline double* getDensity() {
+        inline float* getDensity() {
             return density;
         }
 
-        inline double* getVelocityX() {
+        inline float* getVelocityX() {
             return velocity_x;
         }
 
-        inline double* getVelocityY() {
+        inline float* getVelocityY() {
             return velocity_y;
         }
 
-        inline double* getVelocityZ() {
+        inline float* getVelocityZ() {
             return velocity_z;
         }
 
-        inline double* getVorticity() {
+        inline float* getVorticity() {
             return vorticity;
         }
 
-        inline double* getSpeed() {
+        inline float* getSpeed() {
             return speed;
         }
 
         // Gathered data access (rank 0 only)
-        inline double* getGatheredDensity() {
+        inline float* getGatheredDensity() {
             if (rank != 0 || stored_property != Density) return NULL;
             return recv_buf;
         }
 
-        inline double* getGatheredVorticity() {
+        inline float* getGatheredVorticity() {
             if (rank != 0 || stored_property != Vorticity) return NULL;
             return recv_buf;
         }
 
-        inline double* getGatheredSpeed() {
+        inline float* getGatheredSpeed() {
             if (rank != 0 || stored_property != Speed) return NULL;
             return recv_buf;
         }
@@ -238,7 +246,6 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
 
     // split up problem space
     int n_x, n_y, n_z, col, row, layer, chunk_w, chunk_h, chunk_d, extra_w, extra_h, extra_d;
-    int neighbor_cols, neighbor_rows;
     getClosestFactors3(num_ranks, &n_x, &n_y, &n_z);
     chunk_w = width / n_x;
     chunk_h = height / n_y;
@@ -258,8 +265,6 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     offset_x = col * chunk_w + std::min<int>(col, extra_w);
     offset_y = row * chunk_h + std::min<int>(row, extra_h);
     offset_z = layer * chunk_d + std::min<int>(layer, extra_d);
-    neighbor_cols = (num_ranks == 1) ? 0 : ((col == 0 || col == n_x-1) ? 1 : 2);
-    neighbor_rows = (num_ranks == 1) ? 0 : ((row == 0 || row == n_y-1) ? 1 : 2);
     start_x = (col == 0) ? 0 : 1;
     start_y = (row == 0) ? 0 : 1;
     start_z = (layer == 0) ? 0 : 1;
@@ -293,13 +298,13 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     dim_z = block_depth;
 
     // Debugging
-    if (rank == 0) {
-        std::cout << "Debug - Initial values:" << std::endl;
-        std::cout << "  width/height/depth: " << width << " " << height << " " << depth << std::endl;
-        std::cout << "  num_x/y/z: " << num_x << " " << num_y << " " << num_z << std::endl;
-        std::cout << "  block_width/height/depth: " << block_width << " " << block_height << " " << block_depth << std::endl;
-        std::cout << "  dim_x/y/z: " << dim_x << " " << dim_y << " " << dim_z << std::endl;
-    }
+    //if (rank == 0) {
+    //    std::cout << "Debug - Initial values:" << std::endl;
+    //    std::cout << "  width/height/depth: " << width << " " << height << " " << depth << std::endl;
+    //    std::cout << "  num_x/y/z: " << num_x << " " << num_y << " " << num_z << std::endl;
+    //    std::cout << "  block_width/height/depth: " << block_width << " " << block_height << " " << block_depth << std::endl;
+    //    std::cout << "  dim_x/y/z: " << dim_x << " " << dim_y << " " << dim_z << std::endl;
+    //}
 
     // create data types for exchanging data with neighbors
     int sizes3D[3] = {int(dim_z), int(dim_y), int(dim_x)};
@@ -307,14 +312,14 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     int offsets3D[3] = {int(offset_z), int(offset_y), int(offset_x)};
 
     // More debugging
-    if (rank == 0) {
-        std::cout << "Debug - sizes3D: " << sizes3D[0] << " " << sizes3D[1] << " " << sizes3D[2] << std::endl;
-        std::cout << "Debug - subsize3D: " << subsize3D[0] << " " << subsize3D[1] << " " << subsize3D[2] << std::endl;
-        std::cout << "Debug - offsets3D: " << offsets3D[0] << " " << offsets3D[1] << " " << offsets3D[2] << std::endl;
-        std::cout << "Debug - dims: " << dim_x << " " << dim_y << " " << dim_z << std::endl;
-        std::cout << "Debug - num: " << num_x << " " << num_y << " " << num_z << std::endl;
-        std::cout << "Debug - offset: " << offset_x << " " << offset_y << " " << offset_z << std::endl;
-    }
+    //if (rank == 0) {
+    //    std::cout << "Debug - sizes3D: " << sizes3D[0] << " " << sizes3D[1] << " " << sizes3D[2] << std::endl;
+    //    std::cout << "Debug - subsize3D: " << subsize3D[0] << " " << subsize3D[1] << " " << subsize3D[2] << std::endl;
+    //    std::cout << "Debug - offsets3D: " << offsets3D[0] << " " << offsets3D[1] << " " << offsets3D[2] << std::endl;
+    //    std::cout << "Debug - dims: " << dim_x << " " << dim_y << " " << dim_z << std::endl;
+    //    std::cout << "Debug - num: " << num_x << " " << num_y << " " << num_z << std::endl;
+    //    std::cout << "Debug - offset: " << offset_x << " " << offset_y << " " << offset_z << std::endl;
+    //}
 
     MPI_Type_create_subarray(3, sizes3D, subsize3D, offsets3D, MPI_ORDER_C, MPI_DOUBLE, &own_scalar);
     MPI_Type_commit(&own_scalar);
@@ -415,13 +420,16 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     MPI_Type_create_subarray(3, sizes3D, subsSW, offsSW, MPI_ORDER_C, MPI_DOUBLE, &faceSW);
     MPI_Type_commit(&faceSW);
 
-    recv_buf = new double[total_x * total_y * total_z];
+    recv_buf = new float[total_x * total_y * total_z];
     brecv_buf = new bool[total_x * total_y * total_z];
     
     uint32_t size = dim_x * dim_y * dim_z;
+    size_t total_memory = 0;
 
-    // allocate all double arrays at once
-    double *dbl_arrays = new double[21 * size];
+    // allocate all float arrays at once
+    dbl_arrays = new float[21 * size];
+    total_memory += 21 * size * sizeof(float);
+    printMemoryUsage("Main arrays", total_memory);
 
     // set array pointers
     f_0        = dbl_arrays + (0*size);
@@ -443,7 +451,7 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     // initialize f pointer to point to f_0
     f = f_0;
     
-    fPtr = new double*[Q];
+    fPtr = new float*[Q];
     fPtr[0] = f_0;
     fPtr[1] = f_1;
     fPtr[2] = f_2;
@@ -469,49 +477,115 @@ LbmD3Q15::LbmD3Q15(uint32_t width, uint32_t height, uint32_t depth, double scale
     
     // allocate boolean array
     barrier = new bool[size];
+    total_memory += size * sizeof(bool);
+    printMemoryUsage("Barrier array", size * sizeof(bool));
+
+    // allocate receive buffers
+    recv_buf = new float[total_x * total_y * total_z];
+    brecv_buf = new bool[total_x * total_y * total_z];
+    total_memory += (total_x * total_y * total_z) * (sizeof(float) + sizeof(bool));
+    printMemoryUsage("Receive buffers", (total_x * total_y * total_z) * (sizeof(float) + sizeof(bool)));
+
+    // Allocate rank_local_size and rank_local_start arrays
+    rank_local_size = new uint32_t[2 * num_ranks];
+    rank_local_start = new uint32_t[2 * num_ranks];
+    
+    // Initialize the arrays with the correct values
+    for (int r = 0; r < num_ranks; r++) {
+        int col = r % n_x;
+        int row = (r / n_x) % n_y;
+        
+        rank_local_size[2*r] = chunk_w + ((col < extra_w) ? 1 : 0);  // x size
+        rank_local_size[2*r+1] = chunk_h + ((row < extra_h) ? 1 : 0); // y size
+        
+        rank_local_start[2*r] = col * chunk_w + std::min<int>(col, extra_w);  // x start
+        rank_local_start[2*r+1] = row * chunk_h + std::min<int>(row, extra_h); // y start
+    }
+
+    printMemoryUsage("Total", total_memory);
 }
 
 // destructor
 LbmD3Q15::~LbmD3Q15()
 {
-    MPI_Type_free(&faceXlo);
-    MPI_Type_free(&faceXhi);
-    MPI_Type_free(&faceYlo);
-    MPI_Type_free(&faceYhi);
-    MPI_Type_free(&faceZlo);
-    MPI_Type_free(&faceZhi);
-    MPI_Type_free(&faceN);
-    MPI_Type_free(&faceS);
-    MPI_Type_free(&faceE);
-    MPI_Type_free(&faceW);
-    MPI_Type_free(&faceNE);
-    MPI_Type_free(&faceNW);
-    MPI_Type_free(&faceSE);
-    MPI_Type_free(&faceSW);
-    MPI_Type_free(&own_scalar);
-    MPI_Type_free(&own_bool);
+    //if (rank == 0) std::cout << "Starting destructor..." << std::endl;
+
+    // Free MPI types
+    //if (rank == 0) std::cout << "Freeing MPI types..." << std::endl;
     
-    for (int i=0; i < num_ranks; i++)
-    {
-        MPI_Type_free(&other_scalar[i]);
-        MPI_Type_free(&other_bool[i]);
+    if (faceXlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceXlo);
+    if (faceXhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceXhi);
+    if (faceYlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceYlo);
+    if (faceYhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceYhi);
+    if (faceZlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceZlo);
+    if (faceZhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceZhi);
+    if (faceN != MPI_DATATYPE_NULL) MPI_Type_free(&faceN);
+    if (faceS != MPI_DATATYPE_NULL) MPI_Type_free(&faceS);
+    if (faceE != MPI_DATATYPE_NULL) MPI_Type_free(&faceE);
+    if (faceW != MPI_DATATYPE_NULL) MPI_Type_free(&faceW);
+    if (faceNE != MPI_DATATYPE_NULL) MPI_Type_free(&faceNE);
+    if (faceNW != MPI_DATATYPE_NULL) MPI_Type_free(&faceNW);
+    if (faceSE != MPI_DATATYPE_NULL) MPI_Type_free(&faceSE);
+    if (faceSW != MPI_DATATYPE_NULL) MPI_Type_free(&faceSW);
+    if (own_scalar != MPI_DATATYPE_NULL) MPI_Type_free(&own_scalar);
+    if (own_bool != MPI_DATATYPE_NULL) MPI_Type_free(&own_bool);
+
+    // Free other MPI types
+    //if (rank == 0) std::cout << "Freeing other MPI types..." << std::endl;
+    if (other_scalar != nullptr) {
+        for (int i=0; i < num_ranks; i++) {
+            if (other_scalar[i] != MPI_DATATYPE_NULL) {
+                MPI_Type_free(&other_scalar[i]);
+            }
+        }
+        delete[] other_scalar;
     }
 
-    //delete[] rank_local_size;
-    //delete[] rank_local_start;
-    delete[] density;
-    delete[] velocity_x;
-    delete[] velocity_y;
-    delete[] velocity_z;
-    delete[] vorticity;
-    delete[] speed;
-    delete[] barrier;
-    delete[] recv_buf;
-    delete[] brecv_buf;
-    delete[] other_scalar;
-    delete[] other_bool;
-    delete[] fPtr;
-    delete[] dbl_arrays;
+    if (other_bool != nullptr) {
+        for (int i=0; i < num_ranks; i++) {
+            if (other_bool[i] != MPI_DATATYPE_NULL) {
+                MPI_Type_free(&other_bool[i]);
+            }
+        }
+        delete[] other_bool;
+    }
+
+    // Free arrays
+    //if (rank == 0) std::cout << "Freeing arrays..." << std::endl;
+    if (rank_local_size != nullptr) {
+        //if (rank == 0) std::cout << "Freeing rank_local_size..." << std::endl;
+        delete[] rank_local_size;
+    }
+    if (rank_local_start != nullptr) {
+        //if (rank == 0) std::cout << "Freeing rank_local_start..." << std::endl;
+        delete[] rank_local_start;
+    }
+    if (barrier != nullptr) {
+        //if (rank == 0) std::cout << "Freeing barrier..." << std::endl;
+        delete[] barrier;
+    }
+    if (recv_buf != nullptr) {
+        //if (rank == 0) std::cout << "Freeing recv_buf..." << std::endl;
+        delete[] recv_buf;
+    }
+    if (brecv_buf != nullptr) {
+        //if (rank == 0) std::cout << "Freeing brecv_buf..." << std::endl;
+        delete[] brecv_buf;
+    }
+
+    // Free fPtr before dbl_arrays since fPtr points into dbl_arrays
+    if (fPtr != nullptr) {
+        //if (rank == 0) std::cout << "Freeing fPtr..." << std::endl;
+        delete[] fPtr;
+    }
+    
+    // Finally free the main array that contains all the float data
+    if (dbl_arrays != nullptr) {
+        //if (rank == 0) std::cout << "Freeing dbl_arrays..." << std::endl;
+        delete[] dbl_arrays;
+    }
+
+    //if (rank == 0) std::cout << "Destructor completed successfully." << std::endl;
 }
 
 // initialize barrier based on selected type
@@ -610,6 +684,7 @@ void LbmD3Q15::updateFluid(double physical_speed)
 // particle collision
 void LbmD3Q15::collide(double viscosity)
 {
+	//if (rank == 0) std::cout << "Starting collide (viscosity=" << viscosity << ")" << std::endl;
 	int i, j, row, idx;
 	double omega = 1.0 / (3.0 * viscosity + 0.5); //reciprocal of relaxation time
 	
@@ -644,17 +719,19 @@ void LbmD3Q15::collide(double viscosity)
 			}
 		}
 	}
-
-	exchangeBoundaries();
+        //if (rank == 0) std::cout << "Completed collide" << std::endl;
 }
 	
 // particle streaming
 void LbmD3Q15::stream()
 {
+	//if (rank == 0) std::cout << "Starting stream" << std::endl;
+	
 	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
-	double* f_Old = new double[Q * slice];
-	std::memcpy(f_Old, f, Q * slice * sizeof(double));
+	float* f_Old = new float[Q * slice];
+	std::memcpy(f_Old, f, Q * slice * sizeof(float));
 
+	//if (rank == 0) std::cout << "  Streaming distributions" << std::endl;
 	for (int k = start_z; k < dim_z - start_z; ++k) {
 		for (int j = start_y; j < dim_y - start_y; ++j) {
 			for (int i = start_x; i < dim_x - start_x; ++i) {
@@ -672,16 +749,18 @@ void LbmD3Q15::stream()
 	}
 
 	delete[] f_Old;
-	exchangeBoundaries();
+	//if (rank == 0) std::cout << "Completed stream" << std::endl;
 }
 
 // particle streaming bouncing back off of barriers
 void LbmD3Q15::bounceBackStream()
 {
+	//if (rank == 0) std::cout << "Starting bounceBackStream" << std::endl;
 	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
-	double* f_Old = new double[Q * slice];
-	std::memcpy(f_Old, f, Q * slice * sizeof(double));
+	float* f_Old = new float[Q * slice];
+	std::memcpy(f_Old, f, Q * slice * sizeof(float));
 
+	//if (rank == 0) std::cout << "  Streaming with bounce-back" << std::endl;
 	for (int k = start_z; k < dim_z - start_z; ++k)
 	{
 		for (int j = start_y; j < dim_y - start_y; ++j)
@@ -716,6 +795,7 @@ void LbmD3Q15::bounceBackStream()
 	}
 
 	delete[] f_Old;
+	//if (rank == 0) std::cout << "Completed bounceBackStream" << std::endl;	
 }
 	
 // check if simulation has become unstable (if so, more time steps are required)
@@ -783,7 +863,7 @@ void LbmD3Q15::computeVorticity()
 // gather all data on rank 0
 void LbmD3Q15::gatherDataOnRank0(FluidProperty property)
 {
-    double *send_buf = NULL;
+    float *send_buf = NULL;
     bool *bsend_buf = barrier;
     switch (property)
     {
@@ -976,16 +1056,11 @@ void LbmD3Q15::getClosestFactors3(int value, int *factor_1, int *factor_2, int *
 // private - exchange boundary information between MPI ranks
 void LbmD3Q15::exchangeBoundaries()
 {
-    MPI_Status status;
-    int nx = dim_x;
-    int ny = dim_y;
-    int sx = start_x;
-    int sy = start_y;
-    int cx = num_x;
-    int cy = num_y;
+    //if (rank == 0) std::cout << "Starting exchangeBoundaries" << std::endl;
 
-// Exchange data for all distribution functions
+    // Exchange data for all distribution functions
     for (int d = 0; d < Q; ++d) {
+	//if (rank == 0 && d % 5 == 0) std::cout << "  Exchanging distribution " << d << std::endl;
         // North-South exchange
         MPI_Sendrecv(fPtr[d], 1, faceN, neighbors[NeighborN], TAG_F,
                      fPtr[d], 1, faceS, neighbors[NeighborS], TAG_F,
@@ -1012,7 +1087,8 @@ void LbmD3Q15::exchangeBoundaries()
                      cart_comm, MPI_STATUS_IGNORE);
     }
 
-// density
+    //if (rank == 0) std::cout << "  Exchanging density field" << std::endl;
+    // density
     MPI_Sendrecv(density, 1, faceN, neighbors[NeighborN], TAG_D,
                  density, 1, faceS, neighbors[NeighborS], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
@@ -1033,7 +1109,8 @@ void LbmD3Q15::exchangeBoundaries()
                  density, 1, faceZhi, neighbors[NeighborUp], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
 
-// velocity_x
+    //if (rank == 0) std::cout << "  Exchanging velocity_x field" << std::endl;
+    // velocity_x
     MPI_Sendrecv(velocity_x, 1, faceN, neighbors[NeighborN], TAG_VX,
                  velocity_x, 1, faceS, neighbors[NeighborS], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
@@ -1054,7 +1131,8 @@ void LbmD3Q15::exchangeBoundaries()
                  velocity_x, 1, faceZhi, neighbors[NeighborUp], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
 
-// velocity_y
+    //if (rank == 0) std::cout << "  Exchanging velocity_y field" << std::endl;
+    // velocity_y
     MPI_Sendrecv(velocity_y, 1, faceN, neighbors[NeighborN], TAG_VY,
                  velocity_y, 1, faceS, neighbors[NeighborS], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
@@ -1075,7 +1153,8 @@ void LbmD3Q15::exchangeBoundaries()
                  velocity_y, 1, faceZhi, neighbors[NeighborUp], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
 
-// velocity_z
+    //if (rank == 0) std::cout << "  Exchanging velocity_z field" << std::endl;
+    // velocity_z
     MPI_Sendrecv(velocity_z, 1, faceN, neighbors[NeighborN], TAG_VZ,
                  velocity_z, 1, faceS, neighbors[NeighborS], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
@@ -1095,6 +1174,7 @@ void LbmD3Q15::exchangeBoundaries()
     MPI_Sendrecv(velocity_z, 1, faceZlo, neighbors[NeighborDown], TAG_VZ,
                  velocity_z, 1, faceZhi, neighbors[NeighborUp], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
+    //if (rank == 0) std::cout << "Completed exchangeBoundaries" << std::endl;
 }
 
 #endif // _LBMD3Q15_MPI_HPP_
