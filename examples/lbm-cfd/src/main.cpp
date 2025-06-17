@@ -10,9 +10,9 @@
 #include <conduit_blueprint_mpi.hpp>
 #endif
 
-#include "lbmd3q15_mpi.hpp"
+#include "lbm_mpi.hpp"
 
-void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr);
+void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr, LbmDQ::LatticeType lattice_type);
 void createDivergingColorMap(uint8_t *cmap, uint32_t size);
 #ifdef ASCENT_ENABLED
 void updateAscentData(int rank, int num_ranks, int step, double time, conduit::Node &mesh);
@@ -24,9 +24,7 @@ int32_t readFile(const char *filename, char** data_ptr);
 
 // global vars for LBM and Barriers
 std::vector<Barrier*> barriers;
-LbmD3Q15 *lbm;
-
-//std::cout << "Lbm = " << LbmD3Q15 << "\n";
+LbmDQ *lbm;
 
 int main(int argc, char **argv) {
     int rc, rank, num_ranks;
@@ -34,21 +32,44 @@ int main(int argc, char **argv) {
     rc |= MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     rc |= MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
 
- //   std::cout << "rc = "<< rc << "\n";
-
     if (rc != 0)
     {
         std::cerr << "Error initializing MPI" << std::endl;
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 30;
-    uint32_t dim_y = 12;
-    uint32_t dim_z = 12;
+    uint32_t dim_x = 25;
+    uint32_t dim_y = 10;
+    uint32_t dim_z = 10;
     uint32_t time_steps = 20000;
+    LbmDQ::LatticeType lattice_type;
+    bool model_specified = false;
 
-    if (rank == 0) std::cout << "LBM-CFD> running with " << num_ranks << " processes" << std::endl;
-    if (rank == 0) std::cout << "LBM-CFD> resolution=" << dim_x << "x" << dim_y << "x" << dim_z << ", time steps=" << time_steps << std::endl;
+    // parse command line arguments
+    for (int i = 1; i < argc; i++) {
+	if (strcmp(argv[i], "--d3q15") == 0) {
+	    lattice_type = LbmDQ::D3Q15;
+	    model_specified = true;
+	}
+	else if (strcmp(argv[i], "--d3q19") == 0) {
+	    lattice_type = LbmDQ::D3Q19;
+	    model_specified = true;
+	}
+    }
+
+    if (!model_specified) {
+        if (rank == 0) {
+            std::cerr << "Error: Lattice model must be specified. Use --d3q15 or --d3q19" << std::endl;
+        }
+        MPI_Finalize();
+        return 1;
+    }
+
+    if (rank == 0) {
+        std::cout << "LBM-CFD> running with " << num_ranks << " processes" << std::endl;
+        std::cout << "LBM-CFD> resolution=" << dim_x << "x" << dim_y << "x" << dim_z << ", time steps=" << time_steps << std::endl;
+        std::cout << "LBM-CFD> using " << (lattice_type == LbmDQ::D3Q15 ? "D3Q15" : "D3Q19") << " lattice model" << std::endl;
+    }
 
     void *ascent_ptr = NULL;
 
@@ -74,18 +95,18 @@ int main(int argc, char **argv) {
 #endif
 
     // Run simulation
-    runLbmCfdSimulation(rank, num_ranks, dim_x, dim_y, dim_z, time_steps, ascent_ptr);
+    runLbmCfdSimulation(rank, num_ranks, dim_x, dim_y, dim_z, time_steps, ascent_ptr, lattice_type);
 
-//#ifdef ASCENT_ENABLED
-//    ascent.close();
-//#endif
+#ifdef ASCENT_ENABLED
+    ascent.close();
+#endif
 
     MPI_Finalize();
 
     return 0;
 }
 
-void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr)
+void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr, LbmDQ::LatticeType lattice_type)
 {
     // simulate corn syrup at 25 C in a 2 m pipe, moving 0.75 m/s for 8 sec
     double physical_density = 1380.0;     // kg/m^3
@@ -111,7 +132,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     }
     
     // create LBM object
-    lbm = new LbmD3Q15(dim_x, dim_y, dim_z, simulation_speed_scale, rank, num_ranks);
+    lbm = new LbmDQ(dim_x, dim_y, dim_z, simulation_speed_scale, rank, num_ranks, lattice_type);
     
     // initialize simulation
     // barrier: center-gap
