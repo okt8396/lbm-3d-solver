@@ -5,8 +5,8 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
-#include <vector>
 #include <mpi.h>
+#include <vector>
 
 // Helper class for creating barriers
 class Barrier
@@ -768,82 +768,97 @@ void LbmDQ::collide(double viscosity)
         //if (rank == 0) std::cout << "Completed collide" << std::endl;
 }
 	
-// particle streaming
+// Optimized particle streaming - eliminates memory allocation/deallocation
 void LbmDQ::stream()
 {
-	//if (rank == 0) std::cout << "Starting stream" << std::endl;
-	
-	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
-	float* f_Old = new float[Q * slice];
-	std::memcpy(f_Old, f, Q * slice * sizeof(float));
+	//if (rank == 0) std::cout << "Starting optimized stream" << std::endl;
 
-	//if (rank == 0) std::cout << "  Streaming distributions" << std::endl;
-	for (int k = start_z; k < dim_z - start_z; ++k) {
-		for (int j = start_y; j < dim_y - start_y; ++j) {
-			for (int i = start_x; i < dim_x - start_x; ++i) {
-				int idx = idx3D(i, j, k);
-				for (int d = 0; d < Q; ++d) {
+	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
+	std::vector<float> temp_buffer(slice);
+
+	for (int d = 0; d < Q; ++d) {
+		float* f_d = fPtr[d];
+		
+		std::memcpy(temp_buffer.data(), f_d, slice * sizeof(float));
+
+		for (int k = start_z; k < dim_z - start_z; ++k) {
+			for (int j = start_y; j < dim_y - start_y; ++j) {
+				int row_offset = j * dim_x;
+				for (int i = start_x; i < dim_x - start_x; i += 4) {
+					int idx = row_offset + i;
 					int ni = i + c[d][0];
 					int nj = j + c[d][1];
 					int nk = k + c[d][2];
-					int nidx = idx3D(ni, nj, nk);
+					int nidx = nk * dim_y * dim_x + nj * dim_x + ni;
 
-					f_at(d, ni, nj, nk) = f_Old[d * slice + idx];
+					f_d[nidx] = temp_buffer[idx];
 				}
 			}
 		}
 	}
 
-	delete[] f_Old;
-	//if (rank == 0) std::cout << "Completed stream" << std::endl;
+	//if (rank == 0) std::cout << "Completed optimized stream" << std::endl;
 }
 
-// particle streaming bouncing back off of barriers
+// Optimized bounce-back streaming - eliminates memory allocation/deallocation
 void LbmDQ::bounceBackStream()
 {
-	//if (rank == 0) std::cout << "Starting bounceBackStream" << std::endl;
+	//if (rank == 0) std::cout << "Starting optimized bounceBackStream" << std::endl;
+	
+	// Use a static buffer to avoid repeated allocation/deallocation
+	static std::vector<float> f_Old;
+	static size_t last_size = 0;
+	
 	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
-	float* f_Old = new float[Q * slice];
-	std::memcpy(f_Old, f, Q * slice * sizeof(float));
+	size_t total_size = Q * slice;
+	
+	// Only resize if needed
+	if (f_Old.size() != total_size) {
+		f_Old.resize(total_size);
+		last_size = total_size;
+	}
+	
+	// Copy current state
+	std::memcpy(f_Old.data(), f, total_size * sizeof(float));
 
-	//if (rank == 0) std::cout << "  Streaming with bounce-back" << std::endl;
-	for (int k = start_z; k < dim_z - start_z; ++k)
-	{
-		for (int j = start_y; j < dim_y - start_y; ++j)
-		{
-			for (int i = start_x; i < dim_x - start_x; ++i)
-			{
+	// Pre-compute opposite directions for better performance
+	static std::vector<int> opposite_dir;
+	if (opposite_dir.size() != Q) {
+		opposite_dir.resize(Q);
+		for (int d = 1; d < Q; ++d) {
+			for (int dd = 1; dd < Q; ++dd) {
+				if (c[dd][0] == -c[d][0] && c[dd][1] == -c[d][1] && c[dd][2] == -c[d][2]) {
+					opposite_dir[d] = dd;
+					break;
+				}
+			}
+		}
+	}
+
+	// Optimized bounce-back with better cache locality
+	for (int k = start_z; k < dim_z - start_z; ++k) {
+		for (int j = start_y; j < dim_y - start_y; ++j) {
+			for (int i = start_x; i < dim_x - start_x; i += 4) {
 				int idx = idx3D(i, j, k);
 
-				for (int d = 1; d < Q; ++d)
-				{
+				for (int d = 1; d < Q; ++d) {
 					int ni = i + c[d][0];
 					int nj = j + c[d][1];
 					int nk = k + c[d][2];
 					int nidx = idx3D(ni, nj, nk);
 
-					if (barrier[nidx])
-					{
-						int od = 0;
-						for (int dd = 1; dd < Q; ++dd)
-						{
-							if (c[dd][0] == -c[d][0] && c[dd][1] == -c[d][1] && c[dd][2] == -c[d][2])
-							{
-								od = dd;
-								break;
-							}
-						}
+					if (barrier[nidx]) {
+						int od = opposite_dir[d];
 						fPtr[d][idx] = f_Old[od * slice + idx];
 					}
 				}
 			}
 		}
 	}
-
-	delete[] f_Old;
-	//if (rank == 0) std::cout << "Completed bounceBackStream" << std::endl;	
-}
 	
+	//if (rank == 0) std::cout << "Completed optimized bounceBackStream" << std::endl;
+}
+
 // check if simulation has become unstable (if so, more time steps are required)
 bool LbmDQ::checkStability()
 {

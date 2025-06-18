@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -38,10 +39,10 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 25;
-    uint32_t dim_y = 10;
-    uint32_t dim_z = 10;
-    uint32_t time_steps = 20000;
+    uint32_t dim_x = 50;
+    uint32_t dim_y = 20;
+    uint32_t dim_z = 20;
+    uint32_t time_steps = 10000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
 
@@ -155,6 +156,12 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     int output_count = 0;
     double next_output_time = 0.0;
     uint8_t stable, all_stable;
+
+    // Timing variables
+    std::chrono::high_resolution_clock::time_point start_time, end_time;
+    std::chrono::duration<double> collide_time(0), stream_time(0), bounceback_time(0), exchange_time(0);
+    std::chrono::duration<double> total_iteration_time(0);
+
 #ifdef ASCENT_ENABLED
     int i;
     conduit::Node selections;
@@ -186,31 +193,77 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
             output_count++;
             next_output_time = output_count * physical_freq;
         }
-        
-        // perform one iteration of the simulation
-        //if (rank == 0 && t % 100 == 0) {
-        //    std::cout << "Step " << t << ": Starting collide" << std::endl;
-        //}
+    
+	// Time the entire iteration
+        start_time = std::chrono::high_resolution_clock::now();
+
+        // Time collide step
+        auto collide_start = std::chrono::high_resolution_clock::now();
+
 	lbm->collide(simulation_viscosity);
+
+	auto collide_end = std::chrono::high_resolution_clock::now();
+        collide_time += std::chrono::duration_cast<std::chrono::duration<double>>(collide_end - collide_start);
         
-        //if (rank == 0 && t % 100 == 0) {
-        //    std::cout << "Step " << t << ": Starting stream" << std::endl;
-        //}	
+
+	// Time stream step
+        auto stream_start = std::chrono::high_resolution_clock::now();
+
 	lbm->stream();
 
-	//if (rank == 0 && t % 100 == 0) {
-        //    std::cout << "Step " << t << ": Starting bounceBackStream" << std::endl;
-        //}
+	auto stream_end = std::chrono::high_resolution_clock::now();
+        stream_time += std::chrono::duration_cast<std::chrono::duration<double>>(stream_end - stream_start);
+
+	// Time bounceBackStream step
+        auto bounceback_start = std::chrono::high_resolution_clock::now();
+
         lbm->bounceBackStream();
 
-	//if (rank == 0 && t % 100 == 0) {
-        //    std::cout << "Step " << t << ": Exchanging boundaries" << std::endl;
-        //}
+	auto bounceback_end = std::chrono::high_resolution_clock::now();
+        bounceback_time += std::chrono::duration_cast<std::chrono::duration<double>>(bounceback_end - bounceback_start);
+
+	// Time exchangeBoundaries step
+        auto exchange_start = std::chrono::high_resolution_clock::now();
+
         lbm->exchangeBoundaries();
 
-	//if (rank == 0 && t % 100 == 0) {
-        //    std::cout << "Step " << t << ": Completed iteration" << std::endl;
-        //}
+	auto exchange_end = std::chrono::high_resolution_clock::now();
+        exchange_time += std::chrono::duration_cast<std::chrono::duration<double>>(exchange_end - exchange_start);
+
+        end_time = std::chrono::high_resolution_clock::now();
+        total_iteration_time += std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
+
+        // Print timing every 1000 steps
+        if (t % 1000 == 0 && t > 0 && rank == 0)
+        {
+            std::cout << "Timing (step " << t << "):" << std::endl;
+            std::cout << "  Collide:        " << std::fixed << std::setprecision(6) << collide_time.count() << "s" << std::endl;
+            std::cout << "  Stream:         " << std::fixed << std::setprecision(6) << stream_time.count() << "s" << std::endl;
+            std::cout << "  BounceBack:     " << std::fixed << std::setprecision(6) << bounceback_time.count() << "s" << std::endl;
+            std::cout << "  Exchange:       " << std::fixed << std::setprecision(6) << exchange_time.count() << "s" << std::endl;
+            std::cout << "  Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
+            std::cout << "  Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / t << "s" << std::endl;
+            std::cout << "  Steps/sec:      " << std::fixed << std::setprecision(2) << t / total_iteration_time.count() << std::endl;
+        }
+    }
+
+    // Print final timing summary
+    if (rank == 0)
+    {
+        std::cout << "\n=== FINAL TIMING SUMMARY ===" << std::endl;
+        std::cout << "Total steps: " << time_steps << std::endl;
+        std::cout << "Collide:        " << std::fixed << std::setprecision(6) << collide_time.count() << "s ("
+                  << std::setprecision(2) << (collide_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
+        std::cout << "Stream:         " << std::fixed << std::setprecision(6) << stream_time.count() << "s ("
+                  << std::setprecision(2) << (stream_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
+        std::cout << "BounceBack:     " << std::fixed << std::setprecision(6) << bounceback_time.count() << "s ("
+                  << std::setprecision(2) << (bounceback_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
+        std::cout << "Exchange:       " << std::fixed << std::setprecision(6) << exchange_time.count() << "s ("
+                  << std::setprecision(2) << (exchange_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
+        std::cout << "Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
+        std::cout << "Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / time_steps << "s" << std::endl;
+        std::cout << "Steps/sec:      " << std::fixed << std::setprecision(2) << time_steps / total_iteration_time.count() << std::endl;
+        std::cout << "========================" << std::endl;
     }
 
     // Clean up    
