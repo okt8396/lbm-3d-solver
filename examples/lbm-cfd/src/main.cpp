@@ -56,11 +56,12 @@ int main(int argc, char **argv) {
 	    lattice_type = LbmDQ::D3Q19;
 	    model_specified = true;
 	}
+	else if (strcmp(argv[i], "--d3q27") == 0) {                                                                                                                     lattice_type = LbmDQ::D3Q27;                                                                                                                                model_specified = true;                                                                                                                                 }
     }
 
     if (!model_specified) {
         if (rank == 0) {
-            std::cerr << "Error: Lattice model must be specified. Use --d3q15 or --d3q19" << std::endl;
+            std::cerr << "Error: Lattice model must be specified. Use --d3q15, --d3q19, or --d3q27" << std::endl;
         }
         MPI_Finalize();
         return 1;
@@ -69,7 +70,7 @@ int main(int argc, char **argv) {
     if (rank == 0) {
         std::cout << "LBM-CFD> running with " << num_ranks << " processes" << std::endl;
         std::cout << "LBM-CFD> resolution=" << dim_x << "x" << dim_y << "x" << dim_z << ", time steps=" << time_steps << std::endl;
-        std::cout << "LBM-CFD> using " << (lattice_type == LbmDQ::D3Q15 ? "D3Q15" : "D3Q19") << " lattice model" << std::endl;
+        std::cout << "LBM-CFD> using " << (lattice_type == LbmDQ::D3Q15 ? "D3Q15" : (lattice_type == LbmDQ::D3Q19 ? "D3Q19" : "D3Q27")) << " lattice model" << std::endl;
     }
 
     void *ascent_ptr = NULL;
@@ -233,18 +234,18 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         end_time = std::chrono::high_resolution_clock::now();
         total_iteration_time += std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
 
-        // Print timing every 1000 steps
-        if (t % 1000 == 0 && t > 0 && rank == 0)
-        {
-            std::cout << "Timing (step " << t << "):" << std::endl;
-            std::cout << "  Collide:        " << std::fixed << std::setprecision(6) << collide_time.count() << "s" << std::endl;
-            std::cout << "  Stream:         " << std::fixed << std::setprecision(6) << stream_time.count() << "s" << std::endl;
-            std::cout << "  BounceBack:     " << std::fixed << std::setprecision(6) << bounceback_time.count() << "s" << std::endl;
-            std::cout << "  Exchange:       " << std::fixed << std::setprecision(6) << exchange_time.count() << "s" << std::endl;
-            std::cout << "  Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
-            std::cout << "  Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / t << "s" << std::endl;
-            std::cout << "  Steps/sec:      " << std::fixed << std::setprecision(2) << t / total_iteration_time.count() << std::endl;
-        }
+        //// Print timing every 1000 steps
+        //if (t % 1000 == 0 && t > 0 && rank == 0)
+        //{
+        //    std::cout << "Timing (step " << t << "):" << std::endl;
+        //    std::cout << "  Collide:        " << std::fixed << std::setprecision(6) << collide_time.count() << "s" << std::endl;
+        //    std::cout << "  Stream:         " << std::fixed << std::setprecision(6) << stream_time.count() << "s" << std::endl;
+        //    std::cout << "  BounceBack:     " << std::fixed << std::setprecision(6) << bounceback_time.count() << "s" << std::endl;
+        //    std::cout << "  Exchange:       " << std::fixed << std::setprecision(6) << exchange_time.count() << "s" << std::endl;
+        //    std::cout << "  Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
+        //    std::cout << "  Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / t << "s" << std::endl;
+        //    std::cout << "  Steps/sec:      " << std::fixed << std::setprecision(2) << t / total_iteration_time.count() << std::endl;
+        //}
     }
 
     // Print final timing summary
