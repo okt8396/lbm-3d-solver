@@ -86,12 +86,33 @@ static const double wD3Q19[19] = {
     1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0, 1.0/36.0
 };
 
+// D3Q27 discrete velocities and weights
+static const int cD3Q27[27][3] = {
+    {0,0,0},
+    {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1},
+    {1,1,0}, {-1,1,0}, {1,-1,0}, {-1,-1,0},
+    {1,0,1}, {-1,0,1}, {1,0,-1}, {-1,0,-1},
+    {0,1,1}, {0,-1,1}, {0,1,-1}, {0,-1,-1},
+    {1,1,1}, {-1,1,1}, {1,-1,1}, {-1,-1,1},
+    {1,1,-1}, {-1,1,-1}, {1,-1,-1}, {-1,-1,-1}
+};
+
+static const double wD3Q27[27] = {
+    8.0/27.0,
+    2.0/27.0, 2.0/27.0, 2.0/27.0, 2.0/27.0, 2.0/27.0, 2.0/27.0,
+    1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+    1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+    1.0/54.0, 1.0/54.0, 1.0/54.0, 1.0/54.0,
+    1.0/216.0, 1.0/216.0, 1.0/216.0, 1.0/216.0,
+    1.0/216.0, 1.0/216.0, 1.0/216.0, 1.0/216.0
+};
+
 // Lattice-Boltzman Methods CFD simulation
 class LbmDQ
 {
     public:
         enum FluidProperty {None, Density, Speed, Vorticity};
-	enum LatticeType {D3Q15, D3Q19};
+	enum LatticeType {D3Q15, D3Q19, D3Q27};
 
     private:
         enum Neighbor {NeighborN, NeighborE, NeighborS, NeighborW, NeighborNE, NeighborNW, NeighborSE, NeighborSW, NeighborUp, NeighborDown};
@@ -149,7 +170,7 @@ class LbmDQ
 	MPI_Datatype faceNW, faceSE;
 
         // Add missing member variables
-        float *f_0, *f_1, *f_2, *f_3, *f_4, *f_5, *f_6, *f_7, *f_8, *f_9, *f_10, *f_11, *f_12, *f_13, *f_14, *f_15, *f_16, *f_17, *f_18;
+        float *f_0, *f_1, *f_2, *f_3, *f_4, *f_5, *f_6, *f_7, *f_8, *f_9, *f_10, *f_11, *f_12, *f_13, *f_14, *f_15, *f_16, *f_17, *f_18, *f_19, *f_20, *f_21, *f_22, *f_23, *f_24, *f_25, *f_26;
         float *dbl_arrays;
         uint32_t block_width, block_height, block_depth;
 	float **fPtr;
@@ -270,12 +291,17 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     if (lattice_type == D3Q15) {
 	Q = 15;
 	c = cD3Q15;
-	w = wD3Q19;
+	w = wD3Q15;
     }
-    else {
+    else if (lattice_type == D3Q19) {
 	Q = 19;
 	c = cD3Q19;
 	w = wD3Q19;
+    }
+    else if (lattice_type == D3Q27) {
+	Q = 27;
+	c = cD3Q27;
+	w = wD3Q27;
     }
 
     // split up problem space
@@ -487,6 +513,20 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
 	f_17 = dbl_arrays + (17*size);
 	f_18 = dbl_arrays + (18*size);
     }
+    if (Q == 27) {
+	f_15 = dbl_arrays + (15*size);
+        f_16 = dbl_arrays + (16*size);
+        f_17 = dbl_arrays + (17*size);
+        f_18 = dbl_arrays + (18*size);
+        f_19 = dbl_arrays + (19*size);
+        f_20 = dbl_arrays + (20*size);
+        f_21 = dbl_arrays + (21*size);
+        f_22 = dbl_arrays + (22*size);
+        f_23 = dbl_arrays + (23*size);
+        f_24 = dbl_arrays + (24*size);
+        f_25 = dbl_arrays + (25*size);
+        f_26 = dbl_arrays + (26*size);
+    }
 
     // initialize f pointer to point to f_0
     f = f_0;
@@ -512,6 +552,20 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
 	fPtr[16] = f_16;
 	fPtr[17] = f_17;
 	fPtr[18] = f_18;
+    }
+    if (Q == 27) {
+        fPtr[15] = f_15;
+        fPtr[16] = f_16;
+        fPtr[17] = f_17;
+        fPtr[18] = f_18;
+        fPtr[19] = f_19;
+        fPtr[20] = f_20;
+        fPtr[21] = f_21;
+        fPtr[22] = f_22;
+        fPtr[23] = f_23;
+        fPtr[24] = f_24;
+        fPtr[25] = f_25;
+        fPtr[26] = f_26;
     }
 
     density    = dbl_arrays + (Q*size);
