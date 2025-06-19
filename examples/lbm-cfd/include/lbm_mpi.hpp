@@ -8,6 +8,18 @@
 #include <mpi.h>
 #include <vector>
 
+#define MPI_CHECK(call) \
+    do { \
+        int mpi_err = (call); \
+        if (mpi_err != MPI_SUCCESS) { \
+            char err_str[MPI_MAX_ERROR_STRING]; \
+            int err_len; \
+            MPI_Error_string(mpi_err, err_str, &err_len); \
+            std::cerr << "MPI error at " << __FILE__ << ":" << __LINE__ << ": " << err_str << std::endl; \
+            MPI_Abort(MPI_COMM_WORLD, mpi_err); \
+        } \:
+    } while (0)
+
 // Helper class for creating barriers
 class Barrier
 {
@@ -178,10 +190,10 @@ class LbmDQ
 	// Helper function to print memory usage
         void printMemoryUsage(const char* label, size_t bytes) {
             double mb = bytes / (1024.0 * 1024.0);
-            double gb = mb / 1024.0;
-            //if (rank == 0) {
-            //    std::cout << "Memory usage - " << label << ": " << mb << " MB (" << gb << " GB)" << std::endl;
-            //}
+            double gb = mb / 1024.0; // NOLINT
+            if (rank == 0) {
+                std::cout << "Memory usage - " << label << ": " << mb << " MB (" << gb << " GB)" << std::endl;
+            }
         }
 
 	// Helper functions
@@ -608,11 +620,6 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
 // destructor
 LbmDQ::~LbmDQ()
 {
-    //if (rank == 0) std::cout << "Starting destructor..." << std::endl;
-
-    // Free MPI types
-    //if (rank == 0) std::cout << "Freeing MPI types..." << std::endl;
-    
     if (faceXlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceXlo);
     if (faceXhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceXhi);
     if (faceYlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceYlo);
@@ -630,8 +637,6 @@ LbmDQ::~LbmDQ()
     if (own_scalar != MPI_DATATYPE_NULL) MPI_Type_free(&own_scalar);
     if (own_bool != MPI_DATATYPE_NULL) MPI_Type_free(&own_bool);
 
-    // Free other MPI types
-    //if (rank == 0) std::cout << "Freeing other MPI types..." << std::endl;
     if (other_scalar != nullptr) {
         for (int i=0; i < num_ranks; i++) {
             if (other_scalar[i] != MPI_DATATYPE_NULL) {
@@ -651,41 +656,31 @@ LbmDQ::~LbmDQ()
     }
 
     // Free arrays
-    //if (rank == 0) std::cout << "Freeing arrays..." << std::endl;
     if (rank_local_size != nullptr) {
-        //if (rank == 0) std::cout << "Freeing rank_local_size..." << std::endl;
         delete[] rank_local_size;
     }
     if (rank_local_start != nullptr) {
-        //if (rank == 0) std::cout << "Freeing rank_local_start..." << std::endl;
         delete[] rank_local_start;
     }
     if (barrier != nullptr) {
-        //if (rank == 0) std::cout << "Freeing barrier..." << std::endl;
         delete[] barrier;
     }
     if (recv_buf != nullptr) {
-        //if (rank == 0) std::cout << "Freeing recv_buf..." << std::endl;
         delete[] recv_buf;
     }
     if (brecv_buf != nullptr) {
-        //if (rank == 0) std::cout << "Freeing brecv_buf..." << std::endl;
         delete[] brecv_buf;
     }
 
     // Free fPtr before dbl_arrays since fPtr points into dbl_arrays
     if (fPtr != nullptr) {
-        //if (rank == 0) std::cout << "Freeing fPtr..." << std::endl;
         delete[] fPtr;
     }
     
     // Finally free the main array that contains all the float data
     if (dbl_arrays != nullptr) {
-        //if (rank == 0) std::cout << "Freeing dbl_arrays..." << std::endl;
         delete[] dbl_arrays;
     }
-
-    //if (rank == 0) std::cout << "Destructor completed successfully." << std::endl;
 }
 
 // initialize barrier based on selected type
@@ -784,7 +779,6 @@ void LbmDQ::updateFluid(double physical_speed)
 // particle collision
 void LbmDQ::collide(double viscosity)
 {
-	//if (rank == 0) std::cout << "Starting collide (viscosity=" << viscosity << ")" << std::endl;
 	int i, j, row, idx;
 	double omega = 1.0 / (3.0 * viscosity + 0.5); //reciprocal of relaxation time
 	
@@ -819,14 +813,11 @@ void LbmDQ::collide(double viscosity)
 			}
 		}
 	}
-        //if (rank == 0) std::cout << "Completed collide" << std::endl;
 }
 	
 // Optimized particle streaming - eliminates memory allocation/deallocation
 void LbmDQ::stream()
 {
-	//if (rank == 0) std::cout << "Starting optimized stream" << std::endl;
-
 	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
 	std::vector<float> temp_buffer(slice);
 
@@ -850,15 +841,11 @@ void LbmDQ::stream()
 			}
 		}
 	}
-
-	//if (rank == 0) std::cout << "Completed optimized stream" << std::endl;
 }
 
 // Optimized bounce-back streaming - eliminates memory allocation/deallocation
 void LbmDQ::bounceBackStream()
 {
-	//if (rank == 0) std::cout << "Starting optimized bounceBackStream" << std::endl;
-	
 	// Use a static buffer to avoid repeated allocation/deallocation
 	static std::vector<float> f_Old;
 	static size_t last_size = 0;
@@ -909,8 +896,6 @@ void LbmDQ::bounceBackStream()
 			}
 		}
 	}
-	
-	//if (rank == 0) std::cout << "Completed optimized bounceBackStream" << std::endl;
 }
 
 // check if simulation has become unstable (if so, more time steps are required)
@@ -1171,11 +1156,8 @@ void LbmDQ::getClosestFactors3(int value, int *factor_1, int *factor_2, int *fac
 // private - exchange boundary information between MPI ranks
 void LbmDQ::exchangeBoundaries()
 {
-    //if (rank == 0) std::cout << "Starting exchangeBoundaries" << std::endl;
-
     // Exchange data for all distribution functions
     for (int d = 0; d < Q; ++d) {
-	//if (rank == 0 && d % 5 == 0) std::cout << "  Exchanging distribution " << d << std::endl;
         // North-South exchange
         MPI_Sendrecv(fPtr[d], 1, faceN, neighbors[NeighborN], TAG_F,
                      fPtr[d], 1, faceS, neighbors[NeighborS], TAG_F,
@@ -1202,7 +1184,6 @@ void LbmDQ::exchangeBoundaries()
                      cart_comm, MPI_STATUS_IGNORE);
     }
 
-    //if (rank == 0) std::cout << "  Exchanging density field" << std::endl;
     // density
     MPI_Sendrecv(density, 1, faceN, neighbors[NeighborN], TAG_D,
                  density, 1, faceS, neighbors[NeighborS], TAG_D,
@@ -1224,7 +1205,6 @@ void LbmDQ::exchangeBoundaries()
                  density, 1, faceZhi, neighbors[NeighborUp], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
 
-    //if (rank == 0) std::cout << "  Exchanging velocity_x field" << std::endl;
     // velocity_x
     MPI_Sendrecv(velocity_x, 1, faceN, neighbors[NeighborN], TAG_VX,
                  velocity_x, 1, faceS, neighbors[NeighborS], TAG_VX,
@@ -1246,7 +1226,6 @@ void LbmDQ::exchangeBoundaries()
                  velocity_x, 1, faceZhi, neighbors[NeighborUp], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
 
-    //if (rank == 0) std::cout << "  Exchanging velocity_y field" << std::endl;
     // velocity_y
     MPI_Sendrecv(velocity_y, 1, faceN, neighbors[NeighborN], TAG_VY,
                  velocity_y, 1, faceS, neighbors[NeighborS], TAG_VY,
@@ -1268,7 +1247,6 @@ void LbmDQ::exchangeBoundaries()
                  velocity_y, 1, faceZhi, neighbors[NeighborUp], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
 
-    //if (rank == 0) std::cout << "  Exchanging velocity_z field" << std::endl;
     // velocity_z
     MPI_Sendrecv(velocity_z, 1, faceN, neighbors[NeighborN], TAG_VZ,
                  velocity_z, 1, faceS, neighbors[NeighborS], TAG_VZ,
@@ -1289,7 +1267,6 @@ void LbmDQ::exchangeBoundaries()
     MPI_Sendrecv(velocity_z, 1, faceZlo, neighbors[NeighborDown], TAG_VZ,
                  velocity_z, 1, faceZhi, neighbors[NeighborUp], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
-    //if (rank == 0) std::cout << "Completed exchangeBoundaries" << std::endl;
 }
 
 #endif // _LBMDQ_MPI_HPP_

@@ -39,10 +39,10 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 50;
-    uint32_t dim_y = 20;
-    uint32_t dim_z = 20;
-    uint32_t time_steps = 10000;
+    uint32_t dim_x = 600;
+    uint32_t dim_y = 240;
+    uint32_t dim_z = 240;
+    uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
 
@@ -56,7 +56,10 @@ int main(int argc, char **argv) {
 	    lattice_type = LbmDQ::D3Q19;
 	    model_specified = true;
 	}
-	else if (strcmp(argv[i], "--d3q27") == 0) {                                                                                                                     lattice_type = LbmDQ::D3Q27;                                                                                                                                model_specified = true;                                                                                                                                 }
+	else if (strcmp(argv[i], "--d3q27") == 0) {
+	    lattice_type = LbmDQ::D3Q27;
+	    model_specified = true;
+	}
     }
 
     if (!model_specified) {
@@ -460,6 +463,12 @@ int32_t readFile(const char *filename, char** data_ptr)
     fseek(fp, 0, SEEK_END);
     int32_t fsize = ftell(fp);
     fseek(fp, 0, SEEK_SET);
+
+    if (fsize <= 0) {
+        std::cerr << "Error: file size is zero or negative for " << filename << std::endl;
+        fclose(fp);
+        return -1;
+    }
 
     *data_ptr = (char*)malloc(fsize + 1);
     size_t read = fread(*data_ptr, fsize, 1, fp);
