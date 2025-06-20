@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <mpi.h>
@@ -17,8 +18,17 @@
             MPI_Error_string(mpi_err, err_str, &err_len); \
             std::cerr << "MPI error at " << __FILE__ << ":" << __LINE__ << ": " << err_str << std::endl; \
             MPI_Abort(MPI_COMM_WORLD, mpi_err); \
-        } \:
+        } \
     } while (0)
+
+// Add bounds checking macro
+#ifndef LBM_BOUNDS_CHECK
+#define LBM_BOUNDS_CHECK(idx, arrsize, msg) \
+    if ((idx) < 0 || (idx) >= (arrsize)) { \
+        std::cerr << "Out-of-bounds access: " << (msg) << " at idx=" << (idx) << ", arrsize=" << (arrsize) << std::endl; \
+	MPI_Abort(MPI_COMM_WORLD, 1); \
+    }
+#endif
 
 // Helper class for creating barriers
 class Barrier
@@ -126,6 +136,12 @@ class LbmDQ
         enum FluidProperty {None, Density, Speed, Vorticity};
 	enum LatticeType {D3Q15, D3Q19, D3Q27};
 
+	// Guard byte constants
+	static constexpr int GUARD_SIZE = 8;
+        static constexpr float GUARD_FLOAT = 1e30f;
+        static constexpr bool GUARD_BOOL = (bool)0xAB;
+
+
     private:
         enum Neighbor {NeighborN, NeighborE, NeighborS, NeighborW, NeighborNE, NeighborNW, NeighborSE, NeighborSW, NeighborUp, NeighborDown};
         enum Column {LeftBoundaryCol, LeftCol, RightCol, RightBoundaryCol};
@@ -186,13 +202,18 @@ class LbmDQ
         float *dbl_arrays;
         uint32_t block_width, block_height, block_depth;
 	float **fPtr;
+	uint32_t array_size;
+	
+	// Temporary storage for bounce-back streaming
+	std::vector<float> f_Old;
+	size_t last_size;
 
 	// Helper function to print memory usage
         void printMemoryUsage(const char* label, size_t bytes) {
             double mb = bytes / (1024.0 * 1024.0);
             double gb = mb / 1024.0; // NOLINT
             if (rank == 0) {
-                std::cout << "Memory usage - " << label << ": " << mb << " MB (" << gb << " GB)" << std::endl;
+//                std::cout << "Memory usage - " << label << ": " << mb << " MB (" << gb << " GB)" << std::endl;
             }
         }
 
@@ -326,9 +347,7 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     extra_h = height % n_y;
     extra_d = depth % n_z;
     col = rank % n_x;
-    row = rank / n_x;
-
-    //New
+    row = (rank / n_x) % n_y;
     layer = rank / (n_x * n_y);
 
     num_x = chunk_w + ((col < extra_w) ? 1 : 0);
@@ -340,6 +359,29 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     start_x = (col == 0) ? 0 : 1;
     start_y = (row == 0) ? 0 : 1;
     start_z = (layer == 0) ? 0 : 1;
+
+    // Debug output for partitioning
+//    std::cout << "[Rank " << rank << "] Partitioning: n_x=" << n_x << ", n_y=" << n_y << ", n_z=" << n_z
+//              << ", col=" << col << ", row=" << row << ", layer=" << layer
+//              << ", num_x=" << num_x << ", num_y=" << num_y << ", num_z=" << num_z
+//              << ", offset_x=" << offset_x << ", offset_y=" << offset_y << ", offset_z=" << offset_z << std::endl;
+    
+    // MPI Checks - Abort 
+    if (num_x == 0 || num_y == 0 || num_z == 0) {
+    std::cerr << "[Rank " << rank << "] ERROR: Subdomain has zero size! num_x=" << num_x << ", num_y=" << num_y << ", num_z=" << num_z << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    
+    if (offset_x < 0 || offset_y < 0 || offset_z < 0) {
+        std::cerr << "[Rank " << rank << "] ERROR: Negative offsets! offset_x=" << offset_x << ", offset_y=" << offset_y << ", offset_z=" << offset_z << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    
+    if (offset_x + num_x > width || offset_y + num_y > height || offset_z + num_z > depth) {
+        std::cerr << "[Rank " << rank << "] ERROR: Subdomain extends beyond global domain!" << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
     neighbors[NeighborN] = (row == n_y-1) ? MPI_PROC_NULL : rank + n_x;
     neighbors[NeighborE] = (col == n_x-1) ? MPI_PROC_NULL : rank + 1;
     neighbors[NeighborS] = (row == 0) ? MPI_PROC_NULL : rank - n_x; 
@@ -379,27 +421,33 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     //}
 
     // create data types for exchanging data with neighbors
-    int sizes3D[3] = {int(dim_z), int(dim_y), int(dim_x)};
+    int sizes3D[3] = {int(total_z), int(total_y), int(total_x)};
     int subsize3D[3] = {int(num_z), int(num_y), int(num_x)};
     int offsets3D[3] = {int(offset_z), int(offset_y), int(offset_x)};
 
-    // More debugging
-    //if (rank == 0) {
-    //    std::cout << "Debug - sizes3D: " << sizes3D[0] << " " << sizes3D[1] << " " << sizes3D[2] << std::endl;
-    //    std::cout << "Debug - subsize3D: " << subsize3D[0] << " " << subsize3D[1] << " " << subsize3D[2] << std::endl;
-    //    std::cout << "Debug - offsets3D: " << offsets3D[0] << " " << offsets3D[1] << " " << offsets3D[2] << std::endl;
-    //    std::cout << "Debug - dims: " << dim_x << " " << dim_y << " " << dim_z << std::endl;
-    //    std::cout << "Debug - num: " << num_x << " " << num_y << " " << num_z << std::endl;
-    //    std::cout << "Debug - offset: " << offset_x << " " << offset_y << " " << offset_z << std::endl;
-    //}
-
+    // Debug print and validation for own_scalar/own_bool
+    for (int d = 0; d < 3; ++d) {
+        if (offsets3D[d] < 0 || offsets3D[d] >= sizes3D[d] ||
+            subsize3D[d] < 1 || offsets3D[d] + subsize3D[d] > sizes3D[d]) {
+//            std::cerr << "[Rank " << rank << "] Invalid subarray for own_scalar/own_bool: sizes3D[" << d << "]=" << sizes3D[d]
+//                      << ", subsize3D[" << d << "]=" << subsize3D[d]
+//                      << ", offsets3D[" << d << "]=" << offsets3D[d] << std::endl;
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+    }
+//    std::cout << "[Rank " << rank << "] sizes3D: " << sizes3D[0] << ", " << sizes3D[1] << ", " << sizes3D[2]
+//              << ", subsize3D: " << subsize3D[0] << ", " << subsize3D[1] << ", " << subsize3D[2]
+//              << ", offsets3D: " << offsets3D[0] << ", " << offsets3D[1] << ", " << offsets3D[2] << std::endl;
+    
     MPI_Type_create_subarray(3, sizes3D, subsize3D, offsets3D, MPI_ORDER_C, MPI_DOUBLE, &own_scalar);
     MPI_Type_commit(&own_scalar);
     MPI_Type_create_subarray(3, sizes3D, subsize3D, offsets3D, MPI_ORDER_C, MPI_BYTE, &own_bool);
     MPI_Type_commit(&own_bool);
 
     other_scalar = new MPI_Datatype[num_ranks];
+//    std::cout << "[Rank " << rank << "] Allocated other_scalar: " << static_cast<void*>(other_scalar) << std::endl;
     other_bool = new MPI_Datatype[num_ranks];
+//    std::cout << "[Rank " << rank << "] Allocated other_bool: " << static_cast<void*>(other_bool) << std::endl;
 
     for (int r = 0; r < num_ranks; r++) {
         int col = r % n_x;
@@ -409,6 +457,21 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
         int ooffset[3] = {int(layer * chunk_d + std::min(layer, extra_d)), 
                          int(row * chunk_h + std::min(row, extra_h)),
                          int(col * chunk_w + std::min(col, extra_w))};
+
+	// Debug print and validation for other_scalar/other_bool
+        for (int d = 0; d < 3; ++d) {
+            if (ooffset[d] < 0 || ooffset[d] >= sizes3D[d] ||
+                osub[d] < 1 || ooffset[d] + osub[d] > sizes3D[d]) {
+                std::cerr << "[Rank " << rank << "] Invalid subarray for other_scalar/other_bool (r=" << r << "): sizes3D[" << d << "]=" << sizes3D[d]
+                          << ", osub[" << d << "]=" << osub[d]
+                          << ", ooffset[" << d << "]=" << ooffset[d] << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 1);
+            }
+        }
+        if (rank == 0) {
+//            std::cout << "[Rank 0] r=" << r << ", osub: " << osub[0] << ", " << osub[1] << ", " << osub[2]
+//                      << ", ooffset: " << ooffset[0] << ", " << ooffset[1] << ", " << ooffset[2] << std::endl;
+        }
         
         MPI_Type_create_subarray(3, sizes3D, osub, ooffset, MPI_ORDER_C, MPI_DOUBLE, &other_scalar[r]);
         MPI_Type_commit(&other_scalar[r]);
@@ -492,16 +555,66 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     MPI_Type_create_subarray(3, sizes3D, subsSW, offsSW, MPI_ORDER_C, MPI_DOUBLE, &faceSW);
     MPI_Type_commit(&faceSW);
 
-    recv_buf = new float[total_x * total_y * total_z];
-    brecv_buf = new bool[total_x * total_y * total_z];
-    
+    // Number of guard elements
+    constexpr int GUARD_SIZE = 8;
+    constexpr float GUARD_FLOAT = 1e30f;
+    constexpr bool GUARD_BOOL = (bool)0xAB;
+
+    // Allocate recv_buf and brecv_buf with guard bytes
+    if (rank == 0) {
+        array_size = total_x * total_y * total_z;
+        recv_buf = new float[array_size + GUARD_SIZE];
+//        std::cout << "[Rank " << rank << "] Allocated recv_buf: " << static_cast<void*>(recv_buf) << ", size: " << array_size * sizeof(float) << " bytes (global) + guard" << std::endl;
+        brecv_buf = new bool[array_size + GUARD_SIZE];
+//        std::cout << "[Rank " << rank << "] Allocated brecv_buf: " << static_cast<void*>(brecv_buf) << ", size: " << array_size * sizeof(bool) << " bytes (global) + guard" << std::endl;
+        // Set guard values
+        for (int i = 0; i < GUARD_SIZE; ++i) {
+            recv_buf[array_size + i] = GUARD_FLOAT;
+            brecv_buf[array_size + i] = GUARD_BOOL;
+        }
+    } else {
+        array_size = dim_x * dim_y * dim_z;
+        recv_buf = new float[array_size + GUARD_SIZE];
+//        std::cout << "[Rank " << rank << "] Allocated recv_buf: " << static_cast<void*>(recv_buf) << ", size: " << array_size * sizeof(float) << " bytes (local) + guard" << std::endl;
+        brecv_buf = new bool[array_size + GUARD_SIZE];
+//        std::cout << "[Rank " << rank << "] Allocated brecv_buf: " << static_cast<void*>(brecv_buf) << ", size: " << array_size * sizeof(bool) << " bytes (local) + guard" << std::endl;
+        for (int i = 0; i < GUARD_SIZE; ++i) {
+            recv_buf[array_size + i] = GUARD_FLOAT;
+            brecv_buf[array_size + i] = GUARD_BOOL;
+        }
+    }
+
+    // Print MPI datatype sizes for debugging
+    int size_own_scalar = 0, size_own_bool = 0;
+    MPI_Type_size(own_scalar, &size_own_scalar);
+//    MPI_Type_size(own_bool, &size_own_bool);
+//    std::cout << "[Rank " << rank << "] MPI_Type_size(own_scalar): " << size_own_scalar << ", own_bool: " << size_own_bool << std::endl;
+    for (int r = 0; r < num_ranks; r++) {
+        int size_other_scalar = 0, size_other_bool = 0;
+        MPI_Type_size(other_scalar[r], &size_other_scalar);
+        MPI_Type_size(other_bool[r], &size_other_bool);
+//        std::cout << "[Rank " << rank << "] MPI_Type_size(other_scalar[" << r << "]): " << size_other_scalar
+//                  << ", other_bool[" << r << "]: " << size_other_bool << std::endl;
+        if (size_other_scalar > (int)((total_x * total_y * total_z) * sizeof(float))) {
+//            std::cerr << "[Rank " << rank << "] ERROR: other_scalar[" << r << "] type size (" << size_other_scalar << ") exceeds recv_buf allocation (" << (total_x * total_y * total_z) * sizeof(float) << ")!" << std::endl;
+        }
+        if (size_other_bool > (int)((total_x * total_y * total_z) * sizeof(bool))) {
+//            std::cerr << "[Rank " << rank << "] ERROR: other_bool[" << r << "] type size (" << size_other_bool << ") exceeds brecv_buf allocation (" << (total_x * total_y * total_z) * sizeof(bool) << ")!" << std::endl;
+        }
+    }
+
     uint32_t size = dim_x * dim_y * dim_z;
     size_t total_memory = 0;
 
     // allocate all float arrays at once
-    dbl_arrays = new float[(Q + 6) * size];
+    dbl_arrays = new float[(Q + 6) * size + GUARD_SIZE];
+//    std::cout << "[Rank " << rank << "] Allocated dbl_arrays: " << static_cast<void*>(dbl_arrays) << std::endl;
     total_memory += (Q + 6) * size * sizeof(float);
-    printMemoryUsage("Main arrays", total_memory);
+    
+    // Set guard values for dbl_arrays
+    for (int i = 0; i < GUARD_SIZE; ++i) {
+        dbl_arrays[(Q + 6) * size + i] = GUARD_FLOAT;
+    }
 
     // set array pointers
     f_0        = dbl_arrays + (0*size);
@@ -589,18 +702,22 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     
     // allocate boolean array
     barrier = new bool[size];
+//    std::cout << "[Rank " << rank << "] Allocated barrier: " << static_cast<void*>(barrier) << std::endl;
     total_memory += size * sizeof(bool);
     printMemoryUsage("Barrier array", size * sizeof(bool));
 
     // allocate receive buffers
-    recv_buf = new float[total_x * total_y * total_z];
-    brecv_buf = new bool[total_x * total_y * total_z];
-    total_memory += (total_x * total_y * total_z) * (sizeof(float) + sizeof(bool));
-    printMemoryUsage("Receive buffers", (total_x * total_y * total_z) * (sizeof(float) + sizeof(bool)));
+    
+    //recv_buf = new float[total_x * total_y * total_z];
+    //brecv_buf = new bool[total_x * total_y * total_z]; 
+    //total_memory += (total_x * total_y * total_z) * (sizeof(float) + sizeof(bool));
+    //printMemoryUsage("Receive buffers", (total_x * total_y * total_z) * (sizeof(float) + sizeof(bool)));
 
     // Allocate rank_local_size and rank_local_start arrays
     rank_local_size = new uint32_t[2 * num_ranks];
+//    std::cout << "[Rank " << rank << "] Allocated rank_local_size: " << static_cast<void*>(rank_local_size) << std::endl;
     rank_local_start = new uint32_t[2 * num_ranks];
+//    std::cout << "[Rank " << rank << "] Allocated rank_local_start: " << static_cast<void*>(rank_local_start) << std::endl;
     
     // Initialize the arrays with the correct values
     for (int r = 0; r < num_ranks; r++) {
@@ -614,73 +731,153 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
         rank_local_start[2*r+1] = row * chunk_h + std::min<int>(row, extra_h); // y start
     }
 
-    printMemoryUsage("Total", total_memory);
+//    printMemoryUsage("Total", total_memory);
 }
+
+// destructor
+//LbmDQ::~LbmDQ()
+//{
+//    if (faceXlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceXlo);
+//    if (faceXhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceXhi);
+//    if (faceYlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceYlo);
+//    if (faceYhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceYhi);
+//    if (faceZlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceZlo);
+//    if (faceZhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceZhi);
+//    if (faceN != MPI_DATATYPE_NULL) MPI_Type_free(&faceN);
+//    if (faceS != MPI_DATATYPE_NULL) MPI_Type_free(&faceS);
+//    if (faceE != MPI_DATATYPE_NULL) MPI_Type_free(&faceE);
+//    if (faceW != MPI_DATATYPE_NULL) MPI_Type_free(&faceW);
+//    if (faceNE != MPI_DATATYPE_NULL) MPI_Type_free(&faceNE);
+//    if (faceNW != MPI_DATATYPE_NULL) MPI_Type_free(&faceNW);
+//    if (faceSE != MPI_DATATYPE_NULL) MPI_Type_free(&faceSE);
+//    if (faceSW != MPI_DATATYPE_NULL) MPI_Type_free(&faceSW);
+//    if (own_scalar != MPI_DATATYPE_NULL) MPI_Type_free(&own_scalar);
+//    if (own_bool != MPI_DATATYPE_NULL) MPI_Type_free(&own_bool);
+//
+//    if (other_scalar != nullptr) {
+//        for (int i=0; i < num_ranks; i++) {
+//            if (other_scalar[i] != MPI_DATATYPE_NULL) {
+//                MPI_Type_free(&other_scalar[i]);
+//            }
+//        }
+//        delete[] other_scalar;
+//    }
+//
+//    if (other_bool != nullptr) {
+//        for (int i=0; i < num_ranks; i++) {
+//            if (other_bool[i] != MPI_DATATYPE_NULL) {
+//                MPI_Type_free(&other_bool[i]);
+//            }
+//        }
+//        delete[] other_bool;
+//    }
+//
+//    // Free arrays
+//    if (rank_local_size != nullptr) {
+//        delete[] rank_local_size;
+//    }
+//    if (rank_local_start != nullptr) {
+//        delete[] rank_local_start;
+//    }
+//    if (barrier != nullptr) {
+//        delete[] barrier;
+//    }
+//    if (recv_buf != nullptr) {
+//        delete[] recv_buf;
+//    }
+//    if (brecv_buf != nullptr) {
+//        delete[] brecv_buf;
+//    }
+//
+//    // Free fPtr before dbl_arrays since fPtr points into dbl_arrays
+//    if (fPtr != nullptr) {
+//        delete[] fPtr;
+//    }
+//    
+//    // Finally free the main array that contains all the float data
+//    if (dbl_arrays != nullptr) {
+//        delete[] dbl_arrays;
+//    }
+//}
 
 // destructor
 LbmDQ::~LbmDQ()
 {
-    if (faceXlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceXlo);
-    if (faceXhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceXhi);
-    if (faceYlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceYlo);
-    if (faceYhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceYhi);
-    if (faceZlo != MPI_DATATYPE_NULL) MPI_Type_free(&faceZlo);
-    if (faceZhi != MPI_DATATYPE_NULL) MPI_Type_free(&faceZhi);
-    if (faceN != MPI_DATATYPE_NULL) MPI_Type_free(&faceN);
-    if (faceS != MPI_DATATYPE_NULL) MPI_Type_free(&faceS);
-    if (faceE != MPI_DATATYPE_NULL) MPI_Type_free(&faceE);
-    if (faceW != MPI_DATATYPE_NULL) MPI_Type_free(&faceW);
-    if (faceNE != MPI_DATATYPE_NULL) MPI_Type_free(&faceNE);
-    if (faceNW != MPI_DATATYPE_NULL) MPI_Type_free(&faceNW);
-    if (faceSE != MPI_DATATYPE_NULL) MPI_Type_free(&faceSE);
-    if (faceSW != MPI_DATATYPE_NULL) MPI_Type_free(&faceSW);
-    if (own_scalar != MPI_DATATYPE_NULL) MPI_Type_free(&own_scalar);
-    if (own_bool != MPI_DATATYPE_NULL) MPI_Type_free(&own_bool);
+//    std::cout << "[Rank " << rank << "] Entering destructor" << std::endl;
+    // Free MPI types
+    if (faceXlo != MPI_DATATYPE_NULL) { MPI_Type_free(&faceXlo); faceXlo = MPI_DATATYPE_NULL; }
+    if (faceXhi != MPI_DATATYPE_NULL) { MPI_Type_free(&faceXhi); faceXhi = MPI_DATATYPE_NULL; }
+    if (faceYlo != MPI_DATATYPE_NULL) { MPI_Type_free(&faceYlo); faceYlo = MPI_DATATYPE_NULL; }
+    if (faceYhi != MPI_DATATYPE_NULL) { MPI_Type_free(&faceYhi); faceYhi = MPI_DATATYPE_NULL; }
+    if (faceZlo != MPI_DATATYPE_NULL) { MPI_Type_free(&faceZlo); faceZlo = MPI_DATATYPE_NULL; }
+    if (faceZhi != MPI_DATATYPE_NULL) { MPI_Type_free(&faceZhi); faceZhi = MPI_DATATYPE_NULL; }
+    if (faceN != MPI_DATATYPE_NULL)   { MPI_Type_free(&faceN);   faceN = MPI_DATATYPE_NULL; }
+    if (faceS != MPI_DATATYPE_NULL)   { MPI_Type_free(&faceS);   faceS = MPI_DATATYPE_NULL; }
+    if (faceE != MPI_DATATYPE_NULL)   { MPI_Type_free(&faceE);   faceE = MPI_DATATYPE_NULL; }
+    if (faceW != MPI_DATATYPE_NULL)   { MPI_Type_free(&faceW);   faceW = MPI_DATATYPE_NULL; }
+    if (faceNE != MPI_DATATYPE_NULL)  { MPI_Type_free(&faceNE);  faceNE = MPI_DATATYPE_NULL; }
+    if (faceNW != MPI_DATATYPE_NULL)  { MPI_Type_free(&faceNW);  faceNW = MPI_DATATYPE_NULL; }
+    if (faceSE != MPI_DATATYPE_NULL)  { MPI_Type_free(&faceSE);  faceSE = MPI_DATATYPE_NULL; }
+    if (faceSW != MPI_DATATYPE_NULL)  { MPI_Type_free(&faceSW);  faceSW = MPI_DATATYPE_NULL; }
+    if (own_scalar != MPI_DATATYPE_NULL) { MPI_Type_free(&own_scalar); own_scalar = MPI_DATATYPE_NULL; }
+    if (own_bool != MPI_DATATYPE_NULL)   { MPI_Type_free(&own_bool);   own_bool = MPI_DATATYPE_NULL; }
 
     if (other_scalar != nullptr) {
         for (int i=0; i < num_ranks; i++) {
             if (other_scalar[i] != MPI_DATATYPE_NULL) {
                 MPI_Type_free(&other_scalar[i]);
+                other_scalar[i] = MPI_DATATYPE_NULL;
             }
         }
-        delete[] other_scalar;
+//        std::cout << "[Rank " << rank << "] Deleting other_scalar: " << static_cast<void*>(other_scalar) << std::endl;
+	delete[] other_scalar;
+        other_scalar = nullptr;
     }
 
     if (other_bool != nullptr) {
         for (int i=0; i < num_ranks; i++) {
             if (other_bool[i] != MPI_DATATYPE_NULL) {
                 MPI_Type_free(&other_bool[i]);
+                other_bool[i] = MPI_DATATYPE_NULL;
             }
         }
+//	std::cout << "[Rank " << rank << "] Deleting other_bool: " << static_cast<void*>(other_bool) << std::endl;
         delete[] other_bool;
+        other_bool = nullptr;
     }
+   
+//    if (rank_local_size != nullptr) { std::cout << "[Rank " << rank << "] Deleting rank_local_size: " << static_cast<void*>(rank_local_size) << std::endl; delete[] rank_local_size; rank_local_size = nullptr; }
+//    if (rank_local_start != nullptr) { std::cout << "[Rank " << rank << "] Deleting rank_local_start: " << static_cast<void*>(rank_local_start) << std::endl; delete[] rank_local_start; rank_local_start = nullptr; }
+//    if (barrier != nullptr) { std::cout << "[Rank " << rank << "] Deleting barrier: " << static_cast<void*>(barrier) << std::endl; delete[] barrier; barrier = nullptr; }
+//    if (recv_buf != nullptr) { std::cout << "[Rank " << rank << "] Deleting recv_buf: " << static_cast<void*>(recv_buf) << std::endl; delete[] recv_buf; recv_buf = nullptr; }
+//    if (brecv_buf != nullptr) { std::cout << "[Rank " << rank << "] Deleting brecv_buf: " << static_cast<void*>(brecv_buf) << std::endl; delete[] brecv_buf; brecv_buf = nullptr; }
+//    if (fPtr != nullptr) { std::cout << "[Rank " << rank << "] Deleting fPtr: " << static_cast<void*>(fPtr) << std::endl; delete[] fPtr; fPtr = nullptr; }
+//    if (dbl_arrays != nullptr) { std::cout << "[Rank " << rank << "] Deleting dbl_arrays: " << static_cast<void*>(dbl_arrays) << std::endl; delete[] dbl_arrays; dbl_arrays = nullptr; }
 
-    // Free arrays
-    if (rank_local_size != nullptr) {
-        delete[] rank_local_size;
+    // Check guard bytes for buffer overruns
+    bool guard_ok = true;
+    for (int i = 0; i < GUARD_SIZE; ++i) {
+        if (recv_buf && recv_buf[array_size + i] != GUARD_FLOAT) {
+//            std::cerr << "[Rank " << rank << "] WARNING: recv_buf guard byte " << i << " corrupted!" << std::endl;
+            guard_ok = false;
+        }
+        if (brecv_buf && brecv_buf[array_size + i] != GUARD_BOOL) {
+//            std::cerr << "[Rank " << rank << "] WARNING: brecv_buf guard byte " << i << " corrupted!" << std::endl;
+            guard_ok = false;
+        }
     }
-    if (rank_local_start != nullptr) {
-        delete[] rank_local_start;
+    if (dbl_arrays) {
+        for (int i = 0; i < GUARD_SIZE; ++i) {
+            if (dbl_arrays[(Q + 6) * array_size + i] != GUARD_FLOAT) {
+//                std::cerr << "[Rank " << rank << "] WARNING: dbl_arrays guard byte " << i << " corrupted!" << std::endl;
+                guard_ok = false;
+            }
+        }
     }
-    if (barrier != nullptr) {
-        delete[] barrier;
+    if (!guard_ok) {
+//        std::cerr << "[Rank " << rank << "] WARNING: Buffer overrun detected before delete!" << std::endl;
     }
-    if (recv_buf != nullptr) {
-        delete[] recv_buf;
-    }
-    if (brecv_buf != nullptr) {
-        delete[] brecv_buf;
-    }
-
-    // Free fPtr before dbl_arrays since fPtr points into dbl_arrays
-    if (fPtr != nullptr) {
-        delete[] fPtr;
-    }
-    
-    // Finally free the main array that contains all the float data
-    if (dbl_arrays != nullptr) {
-        delete[] dbl_arrays;
-    }
+//    std::cout << "[Rank " << rank << "] Exiting destructor" << std::endl;
 }
 
 // initialize barrier based on selected type
@@ -781,6 +978,7 @@ void LbmDQ::collide(double viscosity)
 {
 	int i, j, row, idx;
 	double omega = 1.0 / (3.0 * viscosity + 0.5); //reciprocal of relaxation time
+	int arrsize = dim_x * dim_y * dim_z;
 	
 	for (j = 1; j < dim_y -1; j++)
 	{
@@ -788,10 +986,11 @@ void LbmDQ::collide(double viscosity)
 		for (i = 1; i < dim_x - 1; ++i)
 		{
 			idx = row + i;
-
+			LBM_BOUNDS_CHECK(idx, arrsize, "collide main");
 			double rho = 0.0, ux = 0.0, uy = 0.0, uz = 0.0;
 			for (int d = 0; d < Q; ++d)
 			{
+				LBM_BOUNDS_CHECK(idx, arrsize, "collide fPtr");
 				double fv = fPtr[d][idx];
 				rho += fv;
 				ux  += fv * c[d][0];
@@ -809,6 +1008,7 @@ void LbmDQ::collide(double viscosity)
 			{
 				double cu = 3.0 * (c[d][0]*ux + c[d][1]*uy + c[d][2]*uz);
 				double feq = w[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usqr);
+				LBM_BOUNDS_CHECK(idx, arrsize, "collide fPtr update");
 				fPtr[d][idx] += omega * (feq - fPtr[d][idx]);
 			}
 		}
@@ -828,14 +1028,16 @@ void LbmDQ::stream()
 
 		for (int k = start_z; k < dim_z - start_z; ++k) {
 			for (int j = start_y; j < dim_y - start_y; ++j) {
-				int row_offset = j * dim_x;
-				for (int i = start_x; i < dim_x - start_x; i += 4) {
-					int idx = row_offset + i;
+				for (int i = start_x; i < dim_x - start_x; ++i) {
+					int idx = idx3D(i, j, k);
+					LBM_BOUNDS_CHECK(idx, slice, "stream");
 					int ni = i + c[d][0];
 					int nj = j + c[d][1];
 					int nk = k + c[d][2];
-					int nidx = nk * dim_y * dim_x + nj * dim_x + ni;
-
+					// Bounds check for destination indices
+                    			if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) continue;
+					int nidx = idx3D(ni, nj, nk);
+					LBM_BOUNDS_CHECK(nidx, slice, "stream fPtr update");
 					f_d[nidx] = temp_buffer[idx];
 				}
 			}
@@ -860,7 +1062,9 @@ void LbmDQ::bounceBackStream()
 	}
 	
 	// Copy current state
-	std::memcpy(f_Old.data(), f, total_size * sizeof(float));
+	for (int d = 0; d < Q; ++d) {
+	    std::memcpy(f_Old.data() + d * slice, fPtr[d], slice * sizeof(float));
+	}
 
 	// Pre-compute opposite directions for better performance
 	static std::vector<int> opposite_dir;
@@ -879,15 +1083,16 @@ void LbmDQ::bounceBackStream()
 	// Optimized bounce-back with better cache locality
 	for (int k = start_z; k < dim_z - start_z; ++k) {
 		for (int j = start_y; j < dim_y - start_y; ++j) {
-			for (int i = start_x; i < dim_x - start_x; i += 4) {
+			for (int i = start_x; i < dim_x - start_x; ++i) {
 				int idx = idx3D(i, j, k);
-
+				LBM_BOUNDS_CHECK(idx, slice, "bounceBackStream");
 				for (int d = 1; d < Q; ++d) {
 					int ni = i + c[d][0];
 					int nj = j + c[d][1];
 					int nk = k + c[d][2];
+					if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) continue;
 					int nidx = idx3D(ni, nj, nk);
-
+					LBM_BOUNDS_CHECK(nidx, slice, "bounceBackStream fPtr update");
 					if (barrier[nidx]) {
 						int od = opposite_dir[d];
 						fPtr[d][idx] = f_Old[od * slice + idx];
@@ -909,6 +1114,7 @@ bool LbmDQ::checkStability()
 	for (i = 0; i < dim_x; i++)
 	    {
 	        idx = idx3D(i, j, k);
+	    LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "checkStability");
 		if (density[idx] <= 0)
 		{
 		    stable = false;
@@ -929,6 +1135,7 @@ void LbmDQ::computeSpeed()
             for (i = 1; i < dim_x - 1; i++)
             {
 		idx = idx3D(i, j, k);
+		LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "computeSpeed");
 		speed[idx] = sqrt(velocity_x[idx] * velocity_x[idx] + velocity_y[idx] * velocity_y[idx] + velocity_z[idx] * velocity_z[idx]);
 	    }
 	}
@@ -947,6 +1154,7 @@ void LbmDQ::computeVorticity()
 	    for (i = 1; i < dim_x - 1; i++)
 	    {
 		idx = idx3D(i, j, k);
+		LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "computeVorticity");
 
 		double wx = (velocity_z[idx3D(i, j + 1, k)] - velocity_z[idx3D(i, j - 1, k)]) - (velocity_y[idx3D(i, j, k + 1)] - velocity_y[idx3D(i, j, k - 1)]);
 
@@ -1115,6 +1323,7 @@ bool* LbmDQ::getBarrier()
 void LbmDQ::setEquilibrium(int x, int y, int z, double new_velocity_x, double new_velocity_y, double new_velocity_z, double new_density)
 {
 	int idx = idx3D(x, y, z);
+	LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "setEquilibrium");
 
 	density[idx] = new_density;
 	velocity_x[idx] = new_velocity_x;
@@ -1156,117 +1365,209 @@ void LbmDQ::getClosestFactors3(int value, int *factor_1, int *factor_2, int *fac
 // private - exchange boundary information between MPI ranks
 void LbmDQ::exchangeBoundaries()
 {
+    //if (rank == 0) std::cout << "Starting exchangeBoundaries" << std::endl;
+
     // Exchange data for all distribution functions
     for (int d = 0; d < Q; ++d) {
         // North-South exchange
-        MPI_Sendrecv(fPtr[d], 1, faceN, neighbors[NeighborN], TAG_F,
+//        std::cout << "[Rank " << rank << "] d=" << d << " Sendrecv N/S with neighborN=" << neighbors[NeighborN] << ", neighborS=" << neighbors[NeighborS] << std::endl;
+        if (neighbors[NeighborN] != MPI_PROC_NULL && neighbors[NeighborS] != MPI_PROC_NULL) {
+    	    MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, faceN, neighbors[NeighborN], TAG_F,
                      fPtr[d], 1, faceS, neighbors[NeighborS], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE);
+                     cart_comm, MPI_STATUS_IGNORE));
+	}
+//        std::cout << "[Rank " << rank << "] d=" << d << " Finished N/S" << std::endl;
 
         // East-West exchange
-        MPI_Sendrecv(fPtr[d], 1, faceE, neighbors[NeighborE], TAG_F,
+//        std::cout << "[Rank " << rank << "] d=" << d << " Sendrecv E/W with neighborE=" << neighbors[NeighborE] << ", neighborW=" << neighbors[NeighborW] << std::endl;
+        if (neighbors[NeighborE] != MPI_PROC_NULL && neighbors[NeighborW] != MPI_PROC_NULL) {
+	    MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, faceE, neighbors[NeighborE], TAG_F,
                      fPtr[d], 1, faceW, neighbors[NeighborW], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE);
+                     cart_comm, MPI_STATUS_IGNORE));
+	}
+//        std::cout << "[Rank " << rank << "] d=" << d << " Finished E/W" << std::endl;
 
         // Northeast-Southwest exchange
-        MPI_Sendrecv(fPtr[d], 1, faceNE, neighbors[NeighborNE], TAG_F,
+//        std::cout << "[Rank " << rank << "] d=" << d << " Sendrecv NE/SW with neighborNE=" << neighbors[NeighborNE] << ", neighborSW=" << neighbors[NeighborSW] << std::endl;
+        if (neighbors[NeighborNE] != MPI_PROC_NULL && neighbors[NeighborSW] != MPI_PROC_NULL) {
+	    MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, faceNE, neighbors[NeighborNE], TAG_F,
                      fPtr[d], 1, faceSW, neighbors[NeighborSW], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE);
+                     cart_comm, MPI_STATUS_IGNORE));
+	}
+//        std::cout << "[Rank " << rank << "] d=" << d << " Finished NE/SW" << std::endl;
 
         // Northwest-Southeast exchange
-        MPI_Sendrecv(fPtr[d], 1, faceNW, neighbors[NeighborNW], TAG_F,
+//        std::cout << "[Rank " << rank << "] d=" << d << " Sendrecv NW/SE with neighborNW=" << neighbors[NeighborNW] << ", neighborSE=" << neighbors[NeighborSE] << std::endl;
+        if (neighbors[NeighborNW] != MPI_PROC_NULL && neighbors[NeighborSE] != MPI_PROC_NULL) {
+	    MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, faceNW, neighbors[NeighborNW], TAG_F,
                      fPtr[d], 1, faceSE, neighbors[NeighborSE], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE);
+                     cart_comm, MPI_STATUS_IGNORE));
+	}
+//        std::cout << "[Rank " << rank << "] d=" << d << " Finished NW/SE" << std::endl;
 
         // Up-Down exchange
-        MPI_Sendrecv(fPtr[d], 1, faceZlo, neighbors[NeighborDown], TAG_F,
+//        std::cout << "[Rank " << rank << "] d=" << d << " Sendrecv Up/Down with neighborDown=" << neighbors[NeighborDown] << ", neighborUp=" << neighbors[NeighborUp] << std::endl;
+        if (neighbors[NeighborDown] != MPI_PROC_NULL && neighbors[NeighborUp] != MPI_PROC_NULL) {
+	    MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, faceZlo, neighbors[NeighborDown], TAG_F,
                      fPtr[d], 1, faceZhi, neighbors[NeighborUp], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE);
-    }
+                     cart_comm, MPI_STATUS_IGNORE));
+	}
+//        std::cout << "[Rank " << rank << "] d=" << d << " Finished Up/Down" << std::endl;
+    }    
+
+// private - exchange boundary information between MPI ranks
+//void LbmDQ::exchangeBoundaries()
+//{
+//    // Exchange data for all distribution functions
+//    for (int d = 0; d < Q; ++d) {
+//        // North-South exchange
+//        MPI_Sendrecv(fPtr[d], 1, faceN, neighbors[NeighborN], TAG_F,
+//                     fPtr[d], 1, faceS, neighbors[NeighborS], TAG_F,
+//                     cart_comm, MPI_STATUS_IGNORE);
+//
+//        // East-West exchange
+//        MPI_Sendrecv(fPtr[d], 1, faceE, neighbors[NeighborE], TAG_F,
+//                     fPtr[d], 1, faceW, neighbors[NeighborW], TAG_F,
+//                     cart_comm, MPI_STATUS_IGNORE);
+//
+//        // Northeast-Southwest exchange
+//        MPI_Sendrecv(fPtr[d], 1, faceNE, neighbors[NeighborNE], TAG_F,
+//                     fPtr[d], 1, faceSW, neighbors[NeighborSW], TAG_F,
+//                     cart_comm, MPI_STATUS_IGNORE);
+//
+//        // Northwest-Southeast exchange
+//        MPI_Sendrecv(fPtr[d], 1, faceNW, neighbors[NeighborNW], TAG_F,
+//                     fPtr[d], 1, faceSE, neighbors[NeighborSE], TAG_F,
+//                     cart_comm, MPI_STATUS_IGNORE);
+//
+//        // Up-Down exchange
+//        MPI_Sendrecv(fPtr[d], 1, faceZlo, neighbors[NeighborDown], TAG_F,
+//                     fPtr[d], 1, faceZhi, neighbors[NeighborUp], TAG_F,
+//                     cart_comm, MPI_STATUS_IGNORE);
+//    }
 
     // density
-    MPI_Sendrecv(density, 1, faceN, neighbors[NeighborN], TAG_D,
+    if (neighbors[NeighborN] != MPI_PROC_NULL && neighbors[NeighborS] != MPI_PROC_NULL) {
+        MPI_Sendrecv(density, 1, faceN, neighbors[NeighborN], TAG_D,
                  density, 1, faceS, neighbors[NeighborS], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(density, 1, faceE, neighbors[NeighborE], TAG_D,
+    if (neighbors[NeighborE] != MPI_PROC_NULL && neighbors[NeighborW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(density, 1, faceE, neighbors[NeighborE], TAG_D,
                  density, 1, faceW, neighbors[NeighborW], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(density, 1, faceNE, neighbors[NeighborNE], TAG_D,
+    if (neighbors[NeighborNE] != MPI_PROC_NULL && neighbors[NeighborSW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(density, 1, faceNE, neighbors[NeighborNE], TAG_D,
                  density, 1, faceSW, neighbors[NeighborSW], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(density, 1, faceNW, neighbors[NeighborNW], TAG_D,
+    if (neighbors[NeighborNW] != MPI_PROC_NULL && neighbors[NeighborSE] != MPI_PROC_NULL) {
+        MPI_Sendrecv(density, 1, faceNW, neighbors[NeighborNW], TAG_D,
                  density, 1, faceSE, neighbors[NeighborSE], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(density, 1, faceZlo, neighbors[NeighborDown], TAG_D,
+    if (neighbors[NeighborDown] != MPI_PROC_NULL && neighbors[NeighborUp] != MPI_PROC_NULL) {
+        MPI_Sendrecv(density, 1, faceZlo, neighbors[NeighborDown], TAG_D,
                  density, 1, faceZhi, neighbors[NeighborUp], TAG_D,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
     // velocity_x
-    MPI_Sendrecv(velocity_x, 1, faceN, neighbors[NeighborN], TAG_VX,
+    if (neighbors[NeighborN] != MPI_PROC_NULL && neighbors[NeighborS] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_x, 1, faceN, neighbors[NeighborN], TAG_VX,
                  velocity_x, 1, faceS, neighbors[NeighborS], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_x, 1, faceE, neighbors[NeighborE], TAG_VX,
+    if (neighbors[NeighborE] != MPI_PROC_NULL && neighbors[NeighborW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_x, 1, faceE, neighbors[NeighborE], TAG_VX,
                  velocity_x, 1, faceW, neighbors[NeighborW], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_x, 1, faceNE, neighbors[NeighborNE], TAG_VX,
+    if (neighbors[NeighborNE] != MPI_PROC_NULL && neighbors[NeighborSW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_x, 1, faceNE, neighbors[NeighborNE], TAG_VX,
                  velocity_x, 1, faceSW, neighbors[NeighborSW], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_x, 1, faceNW, neighbors[NeighborNW], TAG_VX,
+    if (neighbors[NeighborNW] != MPI_PROC_NULL && neighbors[NeighborSE] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_x, 1, faceNW, neighbors[NeighborNW], TAG_VX,
                  velocity_x, 1, faceSE, neighbors[NeighborSE], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_x, 1, faceZlo, neighbors[NeighborDown], TAG_VX,
+    if (neighbors[NeighborDown] != MPI_PROC_NULL && neighbors[NeighborUp] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_x, 1, faceZlo, neighbors[NeighborDown], TAG_VX,
                  velocity_x, 1, faceZhi, neighbors[NeighborUp], TAG_VX,
                  cart_comm, MPI_STATUS_IGNORE);
 
     // velocity_y
-    MPI_Sendrecv(velocity_y, 1, faceN, neighbors[NeighborN], TAG_VY,
+    if (neighbors[NeighborN] != MPI_PROC_NULL && neighbors[NeighborS] != MPI_PROC_NULL) {
+	MPI_Sendrecv(velocity_y, 1, faceN, neighbors[NeighborN], TAG_VY,
                  velocity_y, 1, faceS, neighbors[NeighborS], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_y, 1, faceE, neighbors[NeighborE], TAG_VY,
+    if (neighbors[NeighborE] != MPI_PROC_NULL && neighbors[NeighborW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_y, 1, faceE, neighbors[NeighborE], TAG_VY,
                  velocity_y, 1, faceW, neighbors[NeighborW], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_y, 1, faceNE, neighbors[NeighborNE], TAG_VY,
+    if (neighbors[NeighborNE] != MPI_PROC_NULL && neighbors[NeighborSW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_y, 1, faceNE, neighbors[NeighborNE], TAG_VY,
                  velocity_y, 1, faceSW, neighbors[NeighborSW], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_y, 1, faceNW, neighbors[NeighborNW], TAG_VY,
+    if (neighbors[NeighborNW] != MPI_PROC_NULL && neighbors[NeighborSE] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_y, 1, faceNW, neighbors[NeighborNW], TAG_VY,
                  velocity_y, 1, faceSE, neighbors[NeighborSE], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_y, 1, faceZlo, neighbors[NeighborDown], TAG_VY,
+    if (neighbors[NeighborDown] != MPI_PROC_NULL && neighbors[NeighborUp] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_y, 1, faceZlo, neighbors[NeighborDown], TAG_VY,
                  velocity_y, 1, faceZhi, neighbors[NeighborUp], TAG_VY,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
     // velocity_z
-    MPI_Sendrecv(velocity_z, 1, faceN, neighbors[NeighborN], TAG_VZ,
+    if (neighbors[NeighborN] != MPI_PROC_NULL && neighbors[NeighborS] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_z, 1, faceN, neighbors[NeighborN], TAG_VZ,
                  velocity_z, 1, faceS, neighbors[NeighborS], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_z, 1, faceE, neighbors[NeighborE], TAG_VZ,
+    if (neighbors[NeighborE] != MPI_PROC_NULL && neighbors[NeighborW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_z, 1, faceE, neighbors[NeighborE], TAG_VZ,
                  velocity_z, 1, faceW, neighbors[NeighborW], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_z, 1, faceNE, neighbors[NeighborNE], TAG_VZ,
+    if (neighbors[NeighborNE] != MPI_PROC_NULL && neighbors[NeighborSW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_z, 1, faceNE, neighbors[NeighborNE], TAG_VZ,
                  velocity_z, 1, faceSW, neighbors[NeighborSW], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_z, 1, faceNW, neighbors[NeighborNW], TAG_VZ,
+    if (neighbors[NeighborNW] != MPI_PROC_NULL && neighbors[NeighborSE] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_z, 1, faceNW, neighbors[NeighborNW], TAG_VZ,
                  velocity_z, 1, faceSE, neighbors[NeighborSE], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 
-    MPI_Sendrecv(velocity_z, 1, faceZlo, neighbors[NeighborDown], TAG_VZ,
+    if (neighbors[NeighborDown] != MPI_PROC_NULL && neighbors[NeighborUp] != MPI_PROC_NULL) {
+        MPI_Sendrecv(velocity_z, 1, faceZlo, neighbors[NeighborDown], TAG_VZ,
                  velocity_z, 1, faceZhi, neighbors[NeighborUp], TAG_VZ,
                  cart_comm, MPI_STATUS_IGNORE);
+    }
 }
 
 #endif // _LBMDQ_MPI_HPP_
