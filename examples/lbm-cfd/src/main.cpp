@@ -39,9 +39,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 20;
-    uint32_t dim_y = 20;
-    uint32_t dim_z = 20;
+    uint32_t dim_x = 50;
+    uint32_t dim_y = 50;
+    uint32_t dim_z = 50;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -237,18 +237,6 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         end_time = std::chrono::high_resolution_clock::now();
         total_iteration_time += std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
 
-        //// Print timing every 1000 steps
-        //if (t % 1000 == 0 && t > 0 && rank == 0)
-        //{
-        //    std::cout << "Timing (step " << t << "):" << std::endl;
-        //    std::cout << "  Collide:        " << std::fixed << std::setprecision(6) << collide_time.count() << "s" << std::endl;
-        //    std::cout << "  Stream:         " << std::fixed << std::setprecision(6) << stream_time.count() << "s" << std::endl;
-        //    std::cout << "  BounceBack:     " << std::fixed << std::setprecision(6) << bounceback_time.count() << "s" << std::endl;
-        //    std::cout << "  Exchange:       " << std::fixed << std::setprecision(6) << exchange_time.count() << "s" << std::endl;
-        //    std::cout << "  Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
-        //    std::cout << "  Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / t << "s" << std::endl;
-        //    std::cout << "  Steps/sec:      " << std::fixed << std::setprecision(2) << t / total_iteration_time.count() << std::endl;
-        //}
     }
 
     // Print final timing summary
