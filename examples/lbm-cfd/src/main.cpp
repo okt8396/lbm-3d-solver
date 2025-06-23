@@ -39,9 +39,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 50;
-    uint32_t dim_y = 50;
-    uint32_t dim_z = 50;
+    uint32_t dim_x = 18;
+    uint32_t dim_y = 18;
+    uint32_t dim_z = 18;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -101,12 +101,19 @@ int main(int argc, char **argv) {
 
     // Run simulation
     runLbmCfdSimulation(rank, num_ranks, dim_x, dim_y, dim_z, time_steps, ascent_ptr, lattice_type);
+    std::cout << "[Rank " << rank << "] Returned from runLbmCfdSimulation." << std::endl;
 
 #ifdef ASCENT_ENABLED
     ascent.close();
 #endif
 
+    std::cout << "[Rank " << rank << "] About to call MPI_Barrier before MPI_Finalize." << std::endl;
+    MPI_Barrier(MPI_COMM_WORLD);
+    std::cout << "[Rank " << rank << "] Passed MPI_Barrier." << std::endl;
+
+    std::cout << "[Rank " << rank << "] About to call MPI_Finalize." << std::endl;
     MPI_Finalize();
+    std::cout << "[Rank " << rank << "] MPI_Finalize completed." << std::endl;
 
     return 0;
 }
@@ -150,9 +157,13 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     //barriers.push_back(new BarrierVertical( 8 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, dim_x / 8 + 1));
     lbm->initBarrier(barriers);
     lbm->initFluid(physical_speed);
+//    std::cout << "[Rank " << rank << "] Finished lbm->initFluid, about to checkGuards()" << std::endl;
+    lbm->checkGuards();
+//    std::cout << "[Rank " << rank << "] Finished checkGuards(), about to call MPI_Barrier" << std::endl;
 
     // sync all processes
     MPI_Barrier(MPI_COMM_WORLD);
+//    std::cout << "[Rank " << rank << "] Finished MPI_Barrier, about to enter simulation loop" << std::endl;
     
     // run simulation
     int t;
@@ -170,6 +181,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     int i;
     conduit::Node selections;
 #endif
+//    std::cout << "[Rank " << rank << "] About to start simulation loop (for t)" << std::endl;
     for (t = 0; t < time_steps; t++)
     {
         // output data at frequency equivalent to `physical_freq` time
@@ -185,7 +197,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
             MPI_Reduce(&stable, &all_stable, 1, MPI_UNSIGNED_CHAR, MPI_MAX, 0, MPI_COMM_WORLD);
             if (!all_stable && rank == 0)
             {
-                std::cerr << "LBM-CFD> Warning: simulation has become unstable (more time steps needed)" << std::endl;
+//                std::cerr << "LBM-CFD> Warning: simulation has become unstable (more time steps needed)" << std::endl;
             }
             
 #ifdef ASCENT_ENABLED
@@ -204,7 +216,9 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         // Time collide step
         auto collide_start = std::chrono::high_resolution_clock::now();
 
+//	std::cout << "[Rank " << rank << "] About to call collide at timestep " << t << std::endl;
 	lbm->collide(simulation_viscosity);
+//	std::cout << "[Rank " << rank << "] Finished call to collide at timestep " << t << std::endl;
 
 	auto collide_end = std::chrono::high_resolution_clock::now();
         collide_time += std::chrono::duration_cast<std::chrono::duration<double>>(collide_end - collide_start);
@@ -213,7 +227,9 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	// Time stream step
         auto stream_start = std::chrono::high_resolution_clock::now();
 
+//	std::cout << "[Rank " << rank << "] About to call stream at timestep " << t << std::endl;
 	lbm->stream();
+//	std::cout << "[Rank " << rank << "] Finished call to stream at timestep " << t << std::endl;
 
 	auto stream_end = std::chrono::high_resolution_clock::now();
         stream_time += std::chrono::duration_cast<std::chrono::duration<double>>(stream_end - stream_start);
@@ -221,7 +237,9 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	// Time bounceBackStream step
         auto bounceback_start = std::chrono::high_resolution_clock::now();
 
+//	std::cout << "[Rank " << rank << "] About to call bounceBackStream at timestep " << t << std::endl;
         lbm->bounceBackStream();
+//	std::cout << "[Rank " << rank << "] Finished call to bounceBackStream at timestep " << t << std::endl;
 
 	auto bounceback_end = std::chrono::high_resolution_clock::now();
         bounceback_time += std::chrono::duration_cast<std::chrono::duration<double>>(bounceback_end - bounceback_start);
@@ -229,7 +247,9 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	// Time exchangeBoundaries step
         auto exchange_start = std::chrono::high_resolution_clock::now();
 
+//	std::cout << "[Rank " << rank << "] About to call exchangeBoundaries at timestep " << t << std::endl;
         lbm->exchangeBoundaries();
+//	std::cout << "[Rank " << rank << "] Finished call to exchangeBoundaries at timestep " << t << std::endl;
 
 	auto exchange_end = std::chrono::high_resolution_clock::now();
         exchange_time += std::chrono::duration_cast<std::chrono::duration<double>>(exchange_end - exchange_start);
@@ -238,6 +258,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         total_iteration_time += std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
 
     }
+    std::cout << "[Rank " << rank << "] Exited simulation loop at t=" << t << " / " << time_steps << std::endl;
 
     // Print final timing summary
     if (rank == 0)
