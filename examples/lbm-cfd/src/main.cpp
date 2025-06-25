@@ -39,9 +39,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 54;
-    uint32_t dim_y = 54;
-    uint32_t dim_z = 54;
+    uint32_t dim_x = 50;
+    uint32_t dim_y = 50;
+    uint32_t dim_z = 50;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
