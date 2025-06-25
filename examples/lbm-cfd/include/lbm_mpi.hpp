@@ -261,7 +261,7 @@ class LbmDQ
         }
 
         void setEquilibrium(int x, int y, int z, double new_velocity_x, double new_velocity_y, double new_velocity_z, double new_density);
-        void getClosestFactors3(int value, int *factor_1, int *factor_2, int *factor_3);
+        void getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, int *n_x, int *n_y, int *n_z);
 
     public:
         LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int task_id, int num_tasks, LatticeType type);
@@ -435,7 +435,7 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
 
     // split up problem space
     int n_x, n_y, n_z, col, row, layer, chunk_w, chunk_h, chunk_d, extra_w, extra_h, extra_d;
-    getClosestFactors3(num_ranks, &n_x, &n_y, &n_z);
+    getBest3DPartition(num_ranks, width, height, depth, &n_x, &n_y, &n_z);
     chunk_w = width / n_x;
     chunk_h = height / n_y;
     chunk_d = depth / n_z;
@@ -472,6 +472,12 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     dim_x = block_width;
     dim_y = block_height;
     dim_z = block_depth;
+
+    // Check for zero-sized subdomains
+    if (num_x == 0 || num_y == 0 || num_z == 0) {
+        std::cerr << "[Rank " << rank << "] ERROR: Subdomain has zero size! num_x=" << num_x << ", num_y=" << num_y << ", num_z=" << num_z << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
     // Set array_size before allocation
     if (rank == 0) {
@@ -1522,7 +1528,7 @@ void LbmDQ::gatherDataOnRank0(FluidProperty property)
 	
     	// Compute offset for rank 0's own data in the global buffer
         int n_x, n_y, n_z;
-        getClosestFactors3(num_ranks, &n_x, &n_y, &n_z);
+        getBest3DPartition(num_ranks, total_x, total_y, total_z, &n_x, &n_y, &n_z);
         int chunk_w = total_x / n_x;
         int chunk_h = total_y / n_y;
         int chunk_d = total_z / n_z;
@@ -1737,47 +1743,39 @@ void LbmDQ::setEquilibrium(int x, int y, int z, double new_velocity_x, double ne
 	}
 }
 
-// private - get 3 factors of a given number that are closest to each other
-void LbmDQ::getClosestFactors3(int value, int *factor_1, int *factor_2, int *factor_3)
+// private - get 3 factors of a given number that are closest to each other and fit the domain
+void LbmDQ::getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, int *n_x, int *n_y, int *n_z)
 {
-    //int test_num = (int)cbrt(value);
-    //while (test_num > 0 && value % test_num != 0)
-    //{
-    //    test_num--;
-    //}
-
-    //int rem = value / test_num;
-    //int test_num2 = (int)sqrt(rem);
-    //while (test_num2 > 0 && rem % test_num2 != 0)
-    //{
-    //    test_num2--;
-    //}
-    //*factor_3 = test_num;        //nz
-    //*factor_2 = test_num2;       //ny
-    //*factor_1 = rem / test_num2; //nx
-
-    int best_x = 1, best_y = 1, best_z = value;
-    int min_diff = value; // start with a large difference
-    for (int x = 1; x <= value; ++x) {
-        if (value % x != 0) continue;
-        int yz = value / x;
-        for (int y = 1; y <= yz; ++y) {
+    int best_x = 1, best_y = 1, best_z = num_ranks;
+    int min_diff = num_ranks; // start with a large difference
+    bool found = false;
+    for (int x = 1; x <= std::min(num_ranks, (int)dim_x); ++x) {
+        if (num_ranks % x != 0) continue;
+        int yz = num_ranks / x;
+        for (int y = 1; y <= std::min(yz, (int)dim_y); ++y) {
             if (yz % y != 0) continue;
             int z = yz / y;
+            if (z > (int)dim_z) continue;
             int arr[3] = {x, y, z};
             std::sort(arr, arr + 3);
             int diff = arr[2] - arr[0];
             if (diff < min_diff) {
                 min_diff = diff;
-                best_x = arr[0];
-                best_y = arr[1];
-                best_z = arr[2];
+                best_x = x;
+                best_y = y;
+                best_z = z;
+                found = true;
             }
         }
     }
-    *factor_1 = best_x;
-    *factor_2 = best_y;
-    *factor_3 = best_z;
+    if (!found) {
+        std::cerr << "ERROR: Cannot partition " << dim_x << "x" << dim_y << "x" << dim_z << " domain among " << num_ranks << " ranks without zero-sized subdomains." << std::endl;
+        std::cerr << "Try using a number of ranks that divides the domain size in at least one dimension." << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    *n_x = best_x;
+    *n_y = best_y;
+    *n_z = best_z;
 }
 
 // private - exchange boundary information between MPI ranks
