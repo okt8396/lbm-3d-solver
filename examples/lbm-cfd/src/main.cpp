@@ -12,6 +12,7 @@
 #endif
 
 #include "lbm_mpi.hpp"
+#include "spdlog/spdlog.h"
 
 void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr, LbmDQ::LatticeType lattice_type);
 void createDivergingColorMap(uint8_t *cmap, uint32_t size);
@@ -28,6 +29,7 @@ std::vector<Barrier*> barriers;
 LbmDQ *lbm;
 
 int main(int argc, char **argv) {
+    spdlog::set_level(spdlog::level::info);
     int rc, rank, num_ranks;
     rc = MPI_Init(&argc, &argv);
     rc |= MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -35,7 +37,7 @@ int main(int argc, char **argv) {
 
     if (rc != 0)
     {
-        std::cerr << "Error initializing MPI" << std::endl;
+	spdlog::error("Error initializing MPI");
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
@@ -64,7 +66,7 @@ int main(int argc, char **argv) {
 
     if (!model_specified) {
         if (rank == 0) {
-            std::cerr << "Error: Lattice model must be specified. Use --d3q15, --d3q19, or --d3q27" << std::endl;
+	    spdlog::error("Error: Lattice model must be specified. Use --d3q15, --d3q19, or --d3q27");
         }
         MPI_Finalize();
         return 1;
@@ -197,7 +199,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
             MPI_Reduce(&stable, &all_stable, 1, MPI_UNSIGNED_CHAR, MPI_MAX, 0, MPI_COMM_WORLD);
             if (!all_stable && rank == 0)
             {
-//                std::cerr << "LBM-CFD> Warning: simulation has become unstable (more time steps needed)" << std::endl;
+                spdlog::warn("LBM-CFD> Warning: simulation has become unstable (more time steps needed)");
             }
             
 #ifdef ASCENT_ENABLED
