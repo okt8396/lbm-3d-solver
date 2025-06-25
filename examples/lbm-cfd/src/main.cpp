@@ -39,9 +39,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 18;
-    uint32_t dim_y = 18;
-    uint32_t dim_z = 18;
+    uint32_t dim_x = 54;
+    uint32_t dim_y = 54;
+    uint32_t dim_z = 54;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -101,19 +101,19 @@ int main(int argc, char **argv) {
 
     // Run simulation
     runLbmCfdSimulation(rank, num_ranks, dim_x, dim_y, dim_z, time_steps, ascent_ptr, lattice_type);
-    std::cout << "[Rank " << rank << "] Returned from runLbmCfdSimulation." << std::endl;
+//    std::cout << "[Rank " << rank << "] Returned from runLbmCfdSimulation." << std::endl;
 
 #ifdef ASCENT_ENABLED
     ascent.close();
 #endif
 
-    std::cout << "[Rank " << rank << "] About to call MPI_Barrier before MPI_Finalize." << std::endl;
-    MPI_Barrier(MPI_COMM_WORLD);
-    std::cout << "[Rank " << rank << "] Passed MPI_Barrier." << std::endl;
+//    std::cout << "[Rank " << rank << "] About to call MPI_Barrier before MPI_Finalize." << std::endl;
+//    MPI_Barrier(MPI_COMM_WORLD);
+//    std::cout << "[Rank " << rank << "] Passed MPI_Barrier." << std::endl;
 
-    std::cout << "[Rank " << rank << "] About to call MPI_Finalize." << std::endl;
+//    std::cout << "[Rank " << rank << "] About to call MPI_Finalize." << std::endl;
     MPI_Finalize();
-    std::cout << "[Rank " << rank << "] MPI_Finalize completed." << std::endl;
+//    std::cout << "[Rank " << rank << "] MPI_Finalize completed." << std::endl;
 
     return 0;
 }
@@ -216,9 +216,8 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         // Time collide step
         auto collide_start = std::chrono::high_resolution_clock::now();
 
-//	std::cout << "[Rank " << rank << "] About to call collide at timestep " << t << std::endl;
 	lbm->collide(simulation_viscosity);
-//	std::cout << "[Rank " << rank << "] Finished call to collide at timestep " << t << std::endl;
+//	lbm->checkGuards();
 
 	auto collide_end = std::chrono::high_resolution_clock::now();
         collide_time += std::chrono::duration_cast<std::chrono::duration<double>>(collide_end - collide_start);
@@ -227,9 +226,8 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	// Time stream step
         auto stream_start = std::chrono::high_resolution_clock::now();
 
-//	std::cout << "[Rank " << rank << "] About to call stream at timestep " << t << std::endl;
 	lbm->stream();
-//	std::cout << "[Rank " << rank << "] Finished call to stream at timestep " << t << std::endl;
+//	lbm->checkGuards();
 
 	auto stream_end = std::chrono::high_resolution_clock::now();
         stream_time += std::chrono::duration_cast<std::chrono::duration<double>>(stream_end - stream_start);
@@ -237,9 +235,8 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	// Time bounceBackStream step
         auto bounceback_start = std::chrono::high_resolution_clock::now();
 
-//	std::cout << "[Rank " << rank << "] About to call bounceBackStream at timestep " << t << std::endl;
         lbm->bounceBackStream();
-//	std::cout << "[Rank " << rank << "] Finished call to bounceBackStream at timestep " << t << std::endl;
+//	lbm->checkGuards();
 
 	auto bounceback_end = std::chrono::high_resolution_clock::now();
         bounceback_time += std::chrono::duration_cast<std::chrono::duration<double>>(bounceback_end - bounceback_start);
@@ -247,9 +244,8 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	// Time exchangeBoundaries step
         auto exchange_start = std::chrono::high_resolution_clock::now();
 
-//	std::cout << "[Rank " << rank << "] About to call exchangeBoundaries at timestep " << t << std::endl;
         lbm->exchangeBoundaries();
-//	std::cout << "[Rank " << rank << "] Finished call to exchangeBoundaries at timestep " << t << std::endl;
+//	lbm->checkGuards();
 
 	auto exchange_end = std::chrono::high_resolution_clock::now();
         exchange_time += std::chrono::duration_cast<std::chrono::duration<double>>(exchange_end - exchange_start);
@@ -258,7 +254,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         total_iteration_time += std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
 
     }
-    std::cout << "[Rank " << rank << "] Exited simulation loop at t=" << t << " / " << time_steps << std::endl;
+//    std::cout << "[Rank " << rank << "] Exited simulation loop at t=" << t << " / " << time_steps << std::endl;
 
     // Print final timing summary
     if (rank == 0)
@@ -277,6 +273,17 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         std::cout << "Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / time_steps << "s" << std::endl;
         std::cout << "Steps/sec:      " << std::fixed << std::setprecision(2) << time_steps / total_iteration_time.count() << std::endl;
         std::cout << "========================" << std::endl;
+    }
+
+    // Print last 5 values and guard bytes of dbl_arrays for debugging
+    int Q = lbm->getQ();
+    uint32_t size = lbm->getDimX() * lbm->getDimY() * lbm->getDimZ();
+    float* dbl_arrays = lbm->getDblArrays();
+//    std::cout << "[Rank " << rank << "] DEBUG: dim_x=" << lbm->getDimX() << ", dim_y=" << lbm->getDimY() << ", dim_z=" << lbm->getDimZ() 
+//              << ", size=" << size << ", total_allocated=" << (Q+6)*size + LbmDQ::GUARD_SIZE 
+//              << ", density_offset=" << Q*size << ", speed_offset=" << (Q+5)*size << std::endl;
+    for (int i = (Q+6)*size - 5; i < (int)((Q+6)*size + LbmDQ::GUARD_SIZE); ++i) {
+//        std::cout << "[Rank " << rank << "] dbl_arrays[" << i << "] = " << dbl_arrays[i] << std::endl;
     }
 
     // Clean up    
