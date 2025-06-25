@@ -468,7 +468,7 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     // Check for zero-sized subdomains
     if (num_x == 0 || num_y == 0 || num_z == 0) {
         spdlog::error("[Rank {}] ERROR: Subdomain has zero size! num_x={}, num_y={}, num_z={}", rank, num_x, num_y, num_z);
-	MPI_Abort(MPI_COMM_WORLD, 1);
+	      MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
     // Set array_size before allocation
@@ -1492,7 +1492,7 @@ void LbmDQ::getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, i
     if (!found) {
         spdlog::error("ERROR: Cannot partition {}x{}x{} domain among {} ranks without zero-sized subdomains.", dim_x, dim_y, dim_z, num_ranks);
         spdlog::error("Try using a number of ranks that divides the domain size in at least one dimension.");
-	MPI_Abort(MPI_COMM_WORLD, 1);
+	      MPI_Abort(MPI_COMM_WORLD, 1);
     }
     *n_x = best_x;
     *n_y = best_y;
