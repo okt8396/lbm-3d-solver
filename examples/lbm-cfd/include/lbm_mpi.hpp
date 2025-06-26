@@ -270,7 +270,7 @@ class LbmDQ
         void initBarrier(std::vector<Barrier*> barriers);
         void initFluid(double physical_speed);
         void updateFluid(double physical_speed);
-        void collide(double viscosity);
+        void collide(double viscosity, int t);
         void stream();
         void bounceBackStream();
         bool checkStability();
@@ -394,6 +394,10 @@ class LbmDQ
 		}
             }
         }
+	// Add public getter for local barrier array
+        inline uint8_t* getLocalBarrier() { return barrier; }
+        // Add public getter for discrete velocity array c
+        inline const int (*getC() const)[3] { return c; }
 };
 
 namespace {
@@ -944,11 +948,12 @@ void LbmDQ::updateFluid(double physical_speed)
 }
 
 // particle collision
-void LbmDQ::collide(double viscosity)
+void LbmDQ::collide(double viscosity, int t)
 {
 	int i, j, k, idx;
 	double omega = 1.0 / (3.0 * viscosity + 0.5); //reciprocal of relaxation time
 	int arrsize = dim_x * dim_y * dim_z;
+	  static bool first_invalid_rho_printed = false;
 	
 	for (k = 1; k < dim_z -1; k++)
 	{
@@ -957,6 +962,9 @@ void LbmDQ::collide(double viscosity)
 			for (i = 1; i < dim_x - 1; ++i)
 			{
 				idx = idx3D(i, j, k);
+				if (barrier && barrier[idx]) {
+                 		   continue; // skip barrier nodes
+                		}
 				LBM_BOUNDS_CHECK(idx, arrsize, "collide main");
 				double rho = 0.0, ux = 0.0, uy = 0.0, uz = 0.0;
 				for (int d = 0; d < Q; ++d)
@@ -969,6 +977,20 @@ void LbmDQ::collide(double viscosity)
 					uy  += fv * c[d][1];
 					uz  += fv * c[d][2];
 				}
+				// === DEBUG: Check for invalid rho ===
+				if (!first_invalid_rho_printed && (rho <= 0.0 || std::isnan(rho) || std::isinf(rho))) {
+                    		printf("[collide][t=%d] WARNING: Invalid rho at (i=%d, j=%d, k=%d): rho=%f\n", t, i, j, k, rho);
+                    		for (int dd = 0; dd < Q; ++dd) {
+                     	            printf("  fPtr[%d][idx]=%f\n", dd, fPtr[dd][idx]);
+                    		}
+                    		if (barrier) {
+                        	    printf("  barrier[%d]=%d\n", idx, barrier[idx]);
+                    		} else {
+                        	    printf("  barrier[%d]=NULL\n", idx);
+                    		}
+				first_invalid_rho_printed = true;
+                		}
+				// === END DEBUG ===
 				LBM_BOUNDS_CHECK(idx, arrsize, "collide density");
 				LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "density]");
 				density[idx] = rho;

@@ -29,7 +29,7 @@ std::vector<Barrier*> barriers;
 LbmDQ *lbm;
 
 int main(int argc, char **argv) {
-    spdlog::set_level(spdlog::level::info);
+    spdlog::set_level(spdlog::level::warn);
     int rc, rank, num_ranks;
     rc = MPI_Init(&argc, &argv);
     rc |= MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -41,9 +41,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 50;
-    uint32_t dim_y = 50;
-    uint32_t dim_z = 50;
+    uint32_t dim_x = 80;
+    uint32_t dim_y = 80;
+    uint32_t dim_z = 80;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -122,11 +122,11 @@ int main(int argc, char **argv) {
 
 void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr, LbmDQ::LatticeType lattice_type)
 {
-    // simulate corn syrup at 25 C in a 2 m pipe, moving 0.75 m/s for 8 sec
+    // simulate corn syrup at 25 C in a 2 m pipe, moving 0.25 m/s for 8 sec
     double physical_density = 1380.0;     // kg/m^3
-    double physical_speed = 0.75;         // m/s
+    double physical_speed = 0.05;         // m/s
     double physical_length = 2.0;         // m
-    double physical_viscosity = 1.3806;   // Pa s
+    double physical_viscosity = 3.0;   // Pa s
     double physical_time = 8.0;           // s
     double physical_freq = 0.25;//0.04;          // s
     double reynolds_number = (physical_density * physical_speed * physical_length) / physical_viscosity;
@@ -147,7 +147,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     
     // create LBM object
     lbm = new LbmDQ(dim_x, dim_y, dim_z, simulation_speed_scale, rank, num_ranks, lattice_type);
-    
+
     // initialize simulation
     // barrier: center-gap
     barriers.push_back(new BarrierVertical( 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, dim_x / 8));
@@ -159,6 +159,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     //barriers.push_back(new BarrierVertical( 8 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, dim_x / 8 + 1));
     lbm->initBarrier(barriers);
     lbm->initFluid(physical_speed);
+
 //    std::cout << "[Rank " << rank << "] Finished lbm->initFluid, about to checkGuards()" << std::endl;
     lbm->checkGuards();
 //    std::cout << "[Rank " << rank << "] Finished checkGuards(), about to call MPI_Barrier" << std::endl;
@@ -218,13 +219,12 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         // Time collide step
         auto collide_start = std::chrono::high_resolution_clock::now();
 
-	lbm->collide(simulation_viscosity);
+	lbm->collide(simulation_viscosity, t);
 //	lbm->checkGuards();
 
 	auto collide_end = std::chrono::high_resolution_clock::now();
         collide_time += std::chrono::duration_cast<std::chrono::duration<double>>(collide_end - collide_start);
-        
-
+       
 	// Time stream step
         auto stream_start = std::chrono::high_resolution_clock::now();
 
@@ -239,7 +239,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
         lbm->bounceBackStream();
 //	lbm->checkGuards();
-
+   
 	auto bounceback_end = std::chrono::high_resolution_clock::now();
         bounceback_time += std::chrono::duration_cast<std::chrono::duration<double>>(bounceback_end - bounceback_start);
 
@@ -249,6 +249,57 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         lbm->exchangeBoundaries();
 //	lbm->checkGuards();
 
+// --- BEGIN: Barrier-adjacent probe debug block ---
+
+        // Only allow a few ranks to print (e.g., 0, 1, 2)
+        if (rank < 10 && t % 5000 == 0) {
+            int N = 3; // Max nodes to print per rank
+            int found = 0;
+            for (int k = 1; k < lbm->getDimZ() - 1 && found < N; ++k)
+            for (int j = 1; j < lbm->getDimY() - 1 && found < N; ++j)
+            for (int i = 1; i < lbm->getDimX() - 1 && found < N; ++i) {
+                int idx = lbm->getDimX() * (j + lbm->getDimY() * k) + i;
+                uint8_t* barrier = lbm->getBarrier();
+                if (!barrier) barrier = lbm->getLocalBarrier(); // fallback for non-root ranks
+                if (barrier[idx]) continue; // skip barrier nodes
+        
+                // Check if any neighbor is a barrier
+                bool near_barrier = false;
+		const int (*c)[3] = lbm->getC();
+                for (int d = 1; d < lbm->getQ(); ++d) {
+                    int ni = i + c[d][0];
+                    int nj = j + c[d][1];
+                    int nk = k + c[d][2];
+                    if (ni < 0 || ni >= lbm->getDimX() ||
+                        nj < 0 || nj >= lbm->getDimY() ||
+                        nk < 0 || nk >= lbm->getDimZ()) continue;
+                    int nidx = lbm->getDimX() * (nj + lbm->getDimY() * nk) + ni;
+                    if (barrier[nidx]) {
+                        near_barrier = true;
+                        break;
+                    }
+                }
+                if (near_barrier) {
+                    // Compute global coordinates
+                    int X = i + lbm->getOffsetX();
+                    int Y = j + lbm->getOffsetY();
+                    int Z = k + lbm->getOffsetZ();
+                    float* vx = lbm->getVelocityX();
+                    float* vy = lbm->getVelocityY();
+                    float* vz = lbm->getVelocityZ();
+                    float* density = lbm->getDensity();
+                    printf("[t=%d] Rank %d near-barrier node (global %d,%d,%d | local %d,%d,%d): "
+                           "velocity=(%.5f,%.5f,%.5f) density=%.5f\n",
+                           t, rank, X, Y, Z, i, j, k, vx[idx], vy[idx], vz[idx], density[idx]);
+                    found++;
+                }
+            }
+            //if (found == 0 && t == 0) {
+              //  printf("[Rank %d] No near-barrier nodes found in local domain.\n", rank);
+            //}
+        }
+// --- END: Barrier-adjacent probe debug block ---
+
 	auto exchange_end = std::chrono::high_resolution_clock::now();
         exchange_time += std::chrono::duration_cast<std::chrono::duration<double>>(exchange_end - exchange_start);
 
@@ -257,6 +308,23 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
     }
 //    std::cout << "[Rank " << rank << "] Exited simulation loop at t=" << t << " / " << time_steps << std::endl;
+
+// === Gather and check global speed field on rank 0 ===
+    lbm->computeSpeed();
+    lbm->gatherDataOnRank0(LbmDQ::Speed);
+    if (rank == 0) {
+        float* speed = lbm->getGatheredSpeed();
+        int N = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
+        float min_d = 1e10, max_d = -1e10, sum_d = 0.0;
+        for (int i = 0; i < N; ++i) {
+            float d = speed[i];
+            if (d < min_d) min_d = d;
+            if (d > max_d) max_d = d;
+            sum_d += d;
+        }
+        printf("Global speed: min=%f, max=%f, mean=%f\n", min_d, max_d, sum_d / N);
+    }
+// === END global speed check ===
 
     // Print final timing summary
     if (rank == 0)
