@@ -1,3 +1,3 @@
 [submodule "examples/lbm-cfd/spdlog"]
 	path = examples/lbm-cfd/spdlog
-	url = git@github.com:gabime/spdlog.git
+	url = https://github.com/gabime/spdlog.git
