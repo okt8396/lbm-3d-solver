@@ -58,46 +58,18 @@
 class Barrier
 {
     public:
-        enum Type {HORIZONTAL, VERTICAL};
-    protected:
-        Type type;
-        int x1;
-        int x2;
-        int y1;
-        int y2;
-
-    public:
-        Type getType() { return type; }
-        int getX1() { return x1; }
-        int getX2() { return x2; }
-        int getY1() { return y1; }
-        int getY2() { return y2; }
+	int x1, x2, y1, y2, z1, z2;
+        Barrier(int x_start, int x_end, int y_start, int y_end, int z_start, int z_end)
+            : x1(x_start), x2(x_end), y1(y_start), y2(y_end), z1(z_start), z2(z_end) {}
+        virtual ~Barrier() {}
 };
 
-class BarrierHorizontal : public Barrier
+class Barrier3D : public Barrier
 {
     public:
-        BarrierHorizontal(int x_start, int x_end, int y) {
-            type = Barrier::HORIZONTAL;
-            x1 = x_start;
-            x2 = x_end;
-            y1 = y;
-            y2 = y;
-        }
-        ~BarrierHorizontal() {}
-};
-
-class BarrierVertical : public Barrier
-{
-    public:
-        BarrierVertical(int y_start, int y_end, int x) {
-            type = Barrier::VERTICAL;
-            x1 = x;
-            x2 = x;
-            y1 = y_start;
-            y2 = y_end;
-        }
-        ~BarrierVertical() {}
+	Barrier3D(int x_start, int x_end, int y_start, int y_end, int z_start, int z_end)
+            : Barrier(x_start, x_end, y_start, y_end, z_start, z_end) {}
+        ~Barrier3D() {}
 };
 
 // D3Q15 discrete velocities and weights
@@ -852,43 +824,22 @@ LbmDQ::~LbmDQ()
 // initialize barrier based on selected type
 void LbmDQ::initBarrier(std::vector<Barrier*> barriers)
 {
-    // clear barrier to all `false`
     memset(barrier, 0, dim_x * dim_y * dim_z * sizeof(uint8_t));
-    // set barrier to `true` where horizontal or vertical barriers exist
-    int i, j;
-    for (i = 0; i < barriers.size(); i++) {
-        if (barriers[i]->getType() == Barrier::Type::HORIZONTAL) {
-            int global_y = barriers[i]->getY1();
-            int y = global_y - offset_y;
-            if (y >= 0 && y < dim_y) {
-                for (j = barriers[i]->getX1(); j <= barriers[i]->getX2(); j++) {
-                    int x = j - offset_x;
-                    if (x >= 0 && x < dim_x) {
-                        for (int k = 0; k < dim_z; ++k) {
-                            int idx = idx3D(x, y, k);
-			    if (idx >= 0 && idx < dim_x * dim_y * dim_z) {
-                                barrier[idx] = 1;
-			    }
-                        }
-                    }
-                }
-            }
-        }
-        else { // Barrier::VERTICAL
-            int global_x = barriers[i]->getX1();
-            int x = global_x - offset_x;
-            if (x >= 0 && x < dim_x) {
-                for (j = barriers[i]->getY1(); j <= barriers[i]->getY2(); j++) {
-                    int y = j - offset_y;
-                    if (y >= 0 && y < dim_y) {
-                        // extrude vertical line through every Z-layer
-                        for (int k = 0; k < dim_z; ++k) {
-                            int idx = idx3D(x, y, k);
-			    if (idx >= 0 && idx < dim_x * dim_y * dim_z) {
-                                barrier[idx] = 1;
-			    }
-                        }
-                    }
+    for (size_t i = 0; i < barriers.size(); ++i) {
+        Barrier* b = barriers[i];
+        for (int k = b->z1; k <= b->z2; ++k) {
+            int z = k - offset_z;
+            if (z < 0 || z >= dim_z) continue;
+            for (int j = b->y1; j <= b->y2; ++j) {
+                int y = j - offset_y;
+                if (y < 0 || y >= dim_y) continue;
+                for (int xg = b->x1; xg <= b->x2; ++xg) {
+                    int x = xg - offset_x;
+                    if (x < 0 || x >= dim_x) continue;
+                    int idx = idx3D(x, y, z);
+                    if (idx >= 0 && idx < dim_x * dim_y * dim_z) {
+                        barrier[idx] = 1;                    
+		    }
                 }
             }
         }
