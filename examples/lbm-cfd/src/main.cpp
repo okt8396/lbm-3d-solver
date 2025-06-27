@@ -42,9 +42,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 20;
-    uint32_t dim_y = 20;
-    uint32_t dim_z = 20;
+    uint32_t dim_x = 60;
+    uint32_t dim_y = 60;
+    uint32_t dim_z = 60;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
     if (!model_specified) {
         if (rank == 0) {
 	    spdlog::error("Error: Lattice model must be specified. Use --d3q15, --d3q19, or --d3q27");
-        }
+ 	}
         MPI_Finalize();
         return 1;
     }
@@ -162,14 +162,11 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     lbm = new LbmDQ(dim_x, dim_y, dim_z, dt / dx, rank, num_ranks, lattice_type);
 
     // initialize simulation
-    // barrier: center-gap
-    barriers.push_back(new BarrierVertical( 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, dim_x / 8));
-    barriers.push_back(new BarrierVertical( 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, dim_x / 8 + 1));
-    barriers.push_back(new BarrierVertical(13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, dim_x / 8));
-    barriers.push_back(new BarrierVertical(13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, dim_x / 8 + 1));
-    // barrier: offset-mid
-    //barriers.push_back(new BarrierVertical( 8 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, dim_x / 8));
-    //barriers.push_back(new BarrierVertical( 8 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, dim_x / 8 + 1));
+    int zmin = 0, zmax = dim_z - 1;
+    barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
+    barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
+    barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
+    barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
     lbm->initBarrier(barriers);
     lbm->initFluid(physical_speed);
 
@@ -557,11 +554,11 @@ void steeringCallback(conduit::Node &params, conduit::Node &output)
             int y2 = new_barriers[4 * i + 3];
             if (x1 == x2)
             {
-                barriers.push_back(new BarrierVertical(std::min(y1, y2), std::max(y1, y2), x1));
-            }
+                barriers.push_back(new Barrier3D(x1, x2, y1, y2, 0, 0));
+	    }
             else if (y1 == y2)
             {
-                barriers.push_back(new BarrierHorizontal(std::min(x1, x2), std::max(x1, x2), y1));
+                barriers.push_back(new Barrier3D(x1, x2, y1, y2, 0, 0));
             }
         }
         lbm->initBarrier(barriers);
