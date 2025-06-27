@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <vector>
 #include <cstdint>
+#include <string>
 
 #undef ASCENT_ENABLED
 
@@ -41,9 +42,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 80;
-    uint32_t dim_y = 80;
-    uint32_t dim_z = 80;
+    uint32_t dim_x = 20;
+    uint32_t dim_y = 20;
+    uint32_t dim_z = 20;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -124,29 +125,41 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 {
     // simulate corn syrup at 25 C in a 2 m pipe, moving 0.25 m/s for 8 sec
     double physical_density = 1380.0;     // kg/m^3
-    double physical_speed = 0.05;         // m/s
+    double physical_speed = 0.25;         // m/s
     double physical_length = 2.0;         // m
-    double physical_viscosity = 3.0;   // Pa s
+    double physical_viscosity = 1.3806;   // Pa s
     double physical_time = 8.0;           // s
     double physical_freq = 0.25;//0.04;          // s
     double reynolds_number = (physical_density * physical_speed * physical_length) / physical_viscosity;
 
     // convert physical properties into simulation properties
-    double simulation_dx = physical_length / (double)dim_y;
-    double simulation_dt = physical_time / (double)time_steps;
-    double simulation_speed_scale = simulation_dt / simulation_dx;
-    double simulation_speed = simulation_speed_scale * physical_speed;
-    double simulation_viscosity = simulation_dt / (simulation_dx * simulation_dx * reynolds_number);
+    double dt = physical_time / time_steps;
+    double dx = physical_length / (double)dim_y;
+    double lattice_viscosity = physical_viscosity * dt / (dx * dx);
+    double lattice_speed = physical_speed * dt / dx;
+    double simulated_time = time_steps * dt;
 
     // output simulation properties
     if (rank == 0)
     {
-        std::cout << std::fixed << std::setprecision(6) << "LBM-CFD> speed: " << simulation_speed << ", viscosity: " <<
-                     simulation_viscosity << ", reynolds: " << reynolds_number << "\n" << std::endl;
+        std::cout << std::fixed << std::setprecision(6);
+        std::cout << "LBM-CFD> PHYSICAL PARAMETERS:" << std::endl;
+        std::cout << "  density:   " << physical_density << " kg/m^3" << std::endl;
+        std::cout << "  viscosity: " << physical_viscosity << " m^2/s" << std::endl;
+        std::cout << "  speed:     " << physical_speed << " m/s" << std::endl;
+        std::cout << "  length:    " << physical_length << " m" << std::endl;
+        std::cout << "  time:      " << physical_time << " s" << std::endl;
+        std::cout << "  Reynolds number:   " << reynolds_number << std::endl;
+        if (lattice_viscosity < 0.005) {
+            std::cout << "*** WARNING: lattice_viscosity < 0.005! Simulation may be unstable. Increase dt, decrease grid resolution, or increase physical viscosity.\n";
+        }
+	if (lattice_speed > 0.1) {
+            std::cout << "*** WARNING: lattice_speed > 0.1! Simulation may be unstable. Decrease physical_speed or increase grid resolution.\n";
+	}
     }
     
     // create LBM object
-    lbm = new LbmDQ(dim_x, dim_y, dim_z, simulation_speed_scale, rank, num_ranks, lattice_type);
+    lbm = new LbmDQ(dim_x, dim_y, dim_z, dt / dx, rank, num_ranks, lattice_type);
 
     // initialize simulation
     // barrier: center-gap
@@ -167,7 +180,59 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     // sync all processes
     MPI_Barrier(MPI_COMM_WORLD);
 //    std::cout << "[Rank " << rank << "] Finished MPI_Barrier, about to enter simulation loop" << std::endl;
-    
+
+    // --- BEGIN: Barrier-adjacent probe debug block ---
+    const int N = 3; // Max nodes to track per rank
+    const int MAX_PRINT_RANK = 1; // Only ranks < MAX_PRINT_RANK will print (set to 1 for only rank 0)
+    struct NodeProbe {
+        int local_i, local_j, local_k;
+        int global_X, global_Y, global_Z;
+        std::vector<int> steps;
+        std::vector<float> vx, vy, vz, density;
+    };
+    std::vector<NodeProbe> near_barrier_nodes;
+    // --- END: Barrier-adjacent probe debug block ---
+
+    // --- BEGIN: Barrier-adjacent probe search ---
+    // Only allow a few ranks to track nodes
+    if (rank < MAX_PRINT_RANK) {
+        for (int k = 1; k < lbm->getDimZ() - 1 && (int)near_barrier_nodes.size() < N; ++k)
+        for (int j = 1; j < lbm->getDimY() - 1 && (int)near_barrier_nodes.size() < N; ++j)
+        for (int i = 1; i < lbm->getDimX() - 1 && (int)near_barrier_nodes.size() < N; ++i) {
+            int idx = lbm->getDimX() * (j + lbm->getDimY() * k) + i;
+            uint8_t* barrier = lbm->getBarrier();
+            if (!barrier) barrier = lbm->getLocalBarrier();
+            if (barrier[idx]) continue;
+            // Check if any neighbor is a barrier
+            bool near_barrier = false;
+            const int (*c)[3] = lbm->getC();
+            for (int d = 1; d < lbm->getQ(); ++d) {
+                int ni = i + c[d][0];
+                int nj = j + c[d][1];
+                int nk = k + c[d][2];
+                if (ni < 0 || ni >= lbm->getDimX() ||
+                    nj < 0 || nj >= lbm->getDimY() ||
+                    nk < 0 || nk >= lbm->getDimZ()) continue;
+                int nidx = lbm->getDimX() * (nj + lbm->getDimY() * nk) + ni;
+                if (barrier[nidx]) {
+                    near_barrier = true;
+                    break;
+                }
+            }
+            if (near_barrier) {
+                NodeProbe probe;
+                probe.local_i = i;
+                probe.local_j = j;
+                probe.local_k = k;
+                probe.global_X = i + lbm->getOffsetX();
+                probe.global_Y = j + lbm->getOffsetY();
+                probe.global_Z = k + lbm->getOffsetZ();
+                near_barrier_nodes.push_back(probe);
+            }
+	}
+    }
+    // --- END: Barrier-adjacent probe search ---
+
     // run simulation
     int t;
     double time;
@@ -188,7 +253,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     for (t = 0; t < time_steps; t++)
     {
         // output data at frequency equivalent to `physical_freq` time
-        time = t * simulation_dt;
+        time = t * dt;
         if (time >= next_output_time)
         {
             if (rank == 0)
@@ -219,7 +284,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         // Time collide step
         auto collide_start = std::chrono::high_resolution_clock::now();
 
-	lbm->collide(simulation_viscosity, t);
+	lbm->collide(lattice_viscosity, t);
 //	lbm->checkGuards();
 
 	auto collide_end = std::chrono::high_resolution_clock::now();
@@ -249,82 +314,29 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         lbm->exchangeBoundaries();
 //	lbm->checkGuards();
 
-// --- BEGIN: Barrier-adjacent probe debug block ---
-
-        // Only allow a few ranks to print (e.g., 0, 1, 2)
-        if (rank < 10 && t % 5000 == 0) {
-            int N = 3; // Max nodes to print per rank
-            int found = 0;
-            for (int k = 1; k < lbm->getDimZ() - 1 && found < N; ++k)
-            for (int j = 1; j < lbm->getDimY() - 1 && found < N; ++j)
-            for (int i = 1; i < lbm->getDimX() - 1 && found < N; ++i) {
-                int idx = lbm->getDimX() * (j + lbm->getDimY() * k) + i;
-                uint8_t* barrier = lbm->getBarrier();
-                if (!barrier) barrier = lbm->getLocalBarrier(); // fallback for non-root ranks
-                if (barrier[idx]) continue; // skip barrier nodes
-        
-                // Check if any neighbor is a barrier
-                bool near_barrier = false;
-		const int (*c)[3] = lbm->getC();
-                for (int d = 1; d < lbm->getQ(); ++d) {
-                    int ni = i + c[d][0];
-                    int nj = j + c[d][1];
-                    int nk = k + c[d][2];
-                    if (ni < 0 || ni >= lbm->getDimX() ||
-                        nj < 0 || nj >= lbm->getDimY() ||
-                        nk < 0 || nk >= lbm->getDimZ()) continue;
-                    int nidx = lbm->getDimX() * (nj + lbm->getDimY() * nk) + ni;
-                    if (barrier[nidx]) {
-                        near_barrier = true;
-                        break;
-                    }
-                }
-                if (near_barrier) {
-                    // Compute global coordinates
-                    int X = i + lbm->getOffsetX();
-                    int Y = j + lbm->getOffsetY();
-                    int Z = k + lbm->getOffsetZ();
-                    float* vx = lbm->getVelocityX();
-                    float* vy = lbm->getVelocityY();
-                    float* vz = lbm->getVelocityZ();
-                    float* density = lbm->getDensity();
-                    printf("[t=%d] Rank %d near-barrier node (global %d,%d,%d | local %d,%d,%d): "
-                           "velocity=(%.5f,%.5f,%.5f) density=%.5f\n",
-                           t, rank, X, Y, Z, i, j, k, vx[idx], vy[idx], vz[idx], density[idx]);
-                    found++;
-                }
-            }
-            //if (found == 0 && t == 0) {
-              //  printf("[Rank %d] No near-barrier nodes found in local domain.\n", rank);
-            //}
-        }
-// --- END: Barrier-adjacent probe debug block ---
-
 	auto exchange_end = std::chrono::high_resolution_clock::now();
         exchange_time += std::chrono::duration_cast<std::chrono::duration<double>>(exchange_end - exchange_start);
 
         end_time = std::chrono::high_resolution_clock::now();
         total_iteration_time += std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
-
+	
+	// After all steps for this iteration, record near-barrier node properties if needed
+        if (rank < MAX_PRINT_RANK && t % 5000 == 0) {
+            float* vx = lbm->getVelocityX();
+            float* vy = lbm->getVelocityY();
+            float* vz = lbm->getVelocityZ();
+            float* density = lbm->getDensity();
+            for (auto& probe : near_barrier_nodes) {
+                int idx = lbm->getDimX() * (probe.local_j + lbm->getDimY() * probe.local_k) + probe.local_i;
+                probe.steps.push_back(t);
+                probe.vx.push_back(vx[idx]);
+                probe.vy.push_back(vy[idx]);
+                probe.vz.push_back(vz[idx]);
+                probe.density.push_back(density[idx]);
+            }
+        }
     }
 //    std::cout << "[Rank " << rank << "] Exited simulation loop at t=" << t << " / " << time_steps << std::endl;
-
-// === Gather and check global speed field on rank 0 ===
-    lbm->computeSpeed();
-    lbm->gatherDataOnRank0(LbmDQ::Speed);
-    if (rank == 0) {
-        float* speed = lbm->getGatheredSpeed();
-        int N = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
-        float min_d = 1e10, max_d = -1e10, sum_d = 0.0;
-        for (int i = 0; i < N; ++i) {
-            float d = speed[i];
-            if (d < min_d) min_d = d;
-            if (d > max_d) max_d = d;
-            sum_d += d;
-        }
-        printf("Global speed: min=%f, max=%f, mean=%f\n", min_d, max_d, sum_d / N);
-    }
-// === END global speed check ===
 
     // Print final timing summary
     if (rank == 0)
@@ -338,12 +350,28 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         std::cout << "BounceBack:     " << std::fixed << std::setprecision(6) << bounceback_time.count() << "s ("
                   << std::setprecision(2) << (bounceback_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
         std::cout << "Exchange:       " << std::fixed << std::setprecision(6) << exchange_time.count() << "s ("
-                  << std::setprecision(2) << (exchange_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
-        std::cout << "Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
+                  << std::setprecision(2) << (exchange_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;                                                                                                                         std::cout << "Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
         std::cout << "Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / time_steps << "s" << std::endl;
         std::cout << "Steps/sec:      " << std::fixed << std::setprecision(2) << time_steps / total_iteration_time.count() << std::endl;
         std::cout << "========================" << std::endl;
     }
+
+// === Gather and check global vorticity field on rank 0 ===
+    lbm->computeVorticity();
+    lbm->gatherDataOnRank0(LbmDQ::Vorticity);
+    if (rank == 0) {
+        float* vorticity = lbm->getGatheredVorticity();
+        int N = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
+        float min_prop = 1e10, max_prop = -1e10, sum_prop = 0.0;
+        for (int i = 0; i < N; ++i) {
+            float prop = vorticity[i];
+            if (prop < min_prop) min_prop = prop;
+            if (prop > max_prop) max_prop = prop;
+            sum_prop += prop;
+        }
+        printf("\nGlobal vorticity: min=%f, max=%f, mean=%f\n", min_prop, max_prop, sum_prop / N);
+    }
+// === END global vorticity check ===
 
     // Print last 5 values and guard bytes of dbl_arrays for debugging
     int Q = lbm->getQ();
@@ -354,6 +382,17 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 //              << ", density_offset=" << Q*size << ", speed_offset=" << (Q+5)*size << std::endl;
     for (int i = (Q+6)*size - 5; i < (int)((Q+6)*size + LbmDQ::GUARD_SIZE); ++i) {
 //        std::cout << "[Rank " << rank << "] dbl_arrays[" << i << "] = " << dbl_arrays[i] << std::endl;
+    }
+
+    // === Print time series for near-barrier nodes after timing summary ===
+    if (rank < MAX_PRINT_RANK && !near_barrier_nodes.empty()) {
+        for (size_t n = 0; n < near_barrier_nodes.size(); ++n) {
+            const auto& probe = near_barrier_nodes[n];
+            printf("\n[END] Rank %d near-barrier node %zu (global %d,%d,%d | local %d,%d,%d):\n", rank, n, probe.global_X, probe.global_Y, probe.global_Z, probe.local_i, probe.local_j, probe.local_k);
+            for (size_t s = 0; s < probe.steps.size(); ++s) {
+                printf("[t=%d] velocity=(%.5f,%.5f,%.5f) density=%.5f\n", probe.steps[s], probe.vx[s], probe.vy[s], probe.vz[s], probe.density[s]);
+            }
+        }
     }
 
     // Clean up    
