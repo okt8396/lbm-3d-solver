@@ -633,6 +633,9 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
         dbl_arrays[(Q + 6) * size + i] = GUARD_FLOAT + i;
     }
 
+    // Zero-initialize all simulation state arrays to prevent uninitialized value warnings
+    std::fill(dbl_arrays, dbl_arrays + (Q + 6) * size, 0.0f);
+
     // set array pointers
     f_0        = dbl_arrays + (0*size);
     f_1        = dbl_arrays + (1*size);
@@ -741,6 +744,11 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
         rank_local_start[2*r] = col * chunk_w + std::min<int>(col, extra_w);  // x start
         rank_local_start[2*r+1] = row * chunk_h + std::min<int>(row, extra_h); // y start
     }
+
+    std::fill(recv_buf, recv_buf + array_size, 0.0f);
+    std::fill(brecv_buf, brecv_buf + array_size, GUARD_BOOL);
+
+    f_Old.resize(Q * size, 0.0f);
 }
 
 // destructor
@@ -819,6 +827,14 @@ LbmDQ::~LbmDQ()
     if (!guard_ok) {
         spdlog::warn("[Rank {}] WARNING: Buffer overrun detected before delete!", rank);
     }
+    // Add missing deletes for dynamically allocated arrays
+    if (dbl_arrays) { delete[] dbl_arrays; dbl_arrays = nullptr; }
+    if (recv_buf) { delete[] recv_buf; recv_buf = nullptr; }
+    if (brecv_buf) { delete[] brecv_buf; brecv_buf = nullptr; }
+    if (barrier) { delete[] barrier; barrier = nullptr; }
+    if (fPtr) { delete[] fPtr; fPtr = nullptr; }
+    if (rank_local_size) { delete[] rank_local_size; rank_local_size = nullptr; }
+    if (rank_local_start) { delete[] rank_local_start; rank_local_start = nullptr; }
 }
 
 // initialize barrier based on selected type

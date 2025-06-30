@@ -17,6 +17,9 @@
 
 void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr, LbmDQ::LatticeType lattice_type);
 void createDivergingColorMap(uint8_t *cmap, uint32_t size);
+void exportSimulationStateToFile(LbmDQ* lbm, const char* filename);
+void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename);
+
 #ifdef ASCENT_ENABLED
 void updateAscentData(int rank, int num_ranks, int step, double time, conduit::Node &mesh);
 void runAscentInSituTasks(conduit::Node &mesh, conduit::Node &selections, ascent::Ascent *ascent_ptr);
@@ -163,10 +166,32 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
     // initialize simulation
     int zmin = 0, zmax = dim_z - 1;
-    barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
-    barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
-    barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
-    barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
+
+    // OLD barriers (assymetric)
+    //barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
+    //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
+    //barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
+    //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
+    
+    // NEW barriers (central sphere)
+    barriers.clear();
+    // Add a central sphere barrier
+    double cx = (dim_x - 1) / 2.0;
+    double cy = (dim_y - 1) / 2.0;
+    double cz = (dim_z - 1) / 2.0;
+    int radius = std::min({dim_x, dim_y, dim_z}) / 5; // 1/5 of the smallest dimension
+    for (int k = 0; k < (int)dim_z; ++k) {
+        for (int j = 0; j < (int)dim_y; ++j) {
+            for (int i = 0; i < (int)dim_x; ++i) {
+                double dx = i - cx;
+                double dy = j - cy;
+                double dz = k - cz;
+                if (dx*dx + dy*dy + dz*dz <= radius*radius) {
+                    barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+                }
+            }
+        }
+    }
     lbm->initBarrier(barriers);
     lbm->initFluid(physical_speed);
 
@@ -235,7 +260,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     double time;
     int output_count = 0;
     double next_output_time = 0.0;
-    uint8_t stable, all_stable;
+    uint8_t stable, all_stable = 0;
 
     // Timing variables
     std::chrono::high_resolution_clock::time_point start_time, end_time;
@@ -353,22 +378,32 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         std::cout << "========================" << std::endl;
     }
 
-// === Gather and check global vorticity field on rank 0 ===
-    lbm->computeVorticity();
-    lbm->gatherDataOnRank0(LbmDQ::Vorticity);
+// === Gather and check global speed field on rank 0 ===
+    lbm->computeSpeed();
+    lbm->gatherDataOnRank0(LbmDQ::Speed);
     if (rank == 0) {
-        float* vorticity = lbm->getGatheredVorticity();
+        float* speed = lbm->getGatheredSpeed();
         int N = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
         float min_prop = 1e10, max_prop = -1e10, sum_prop = 0.0;
-        for (int i = 0; i < N; ++i) {
-            float prop = vorticity[i];
+	for (int i = 0; i < N; ++i) {
+            float prop = speed[i];
             if (prop < min_prop) min_prop = prop;
             if (prop > max_prop) max_prop = prop;
             sum_prop += prop;
         }
-        printf("\nGlobal vorticity: min=%f, max=%f, mean=%f\n", min_prop, max_prop, sum_prop / N);
+        //printf("\nGlobal speed: min=%f, max=%f, mean=%f\n", min_prop, max_prop, sum_prop / N);
     }
 // === END global vorticity check ===
+
+    // Gather speed data for export (rank 0 only)
+    lbm->computeSpeed();
+    lbm->gatherDataOnRank0(LbmDQ::Speed);
+
+    // Export simulation state to file (rank 0 only, after gathering)
+    if (rank == 0) {
+        exportSimulationStateToFile(lbm, "speed_state60.txt");
+	exportSimulationStateToVTK(lbm, "sim_sphere_speed60.vtk");
+    }
 
     // Print last 5 values and guard bytes of dbl_arrays for debugging
     int Q = lbm->getQ();
@@ -394,6 +429,11 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
     // Clean up    
     delete lbm;
+    // Delete all Barrier* objects to prevent memory leaks
+    for (Barrier* b : barriers) {
+        delete b;
+    }
+    barriers.clear();
 }
 
 #ifdef ASCENT_ENABLED
@@ -604,4 +644,125 @@ int32_t readFile(const char *filename, char** data_ptr)
     fclose(fp);
 
     return fsize;
+}
+
+// Export simulation state to file: one line per element (x y z value)
+void exportSimulationStateToFile(LbmDQ* lbm, const char* filename) {
+    // Choose which scalar to export by changing this line:
+    float* gathered = lbm->getGatheredSpeed(); // <-- Change to getGatheredVorticity() or getGatheredDensity() as needed
+    if (!gathered) {
+        fprintf(stderr, "Error: gathered array is NULL!\n");
+        return;
+    }
+    const char* scalar_name = "speed_m_per_s"; // <-- Change to "vorticity" or "density" to match above
+    double value_scale = 1.0; // <-- Will be set below
+
+    // Physical parameters (should match those in runLbmCfdSimulation)
+    double physical_density = 1380.0; // kg/m^3
+    double physical_length = 2.0; // meters
+    double physical_time = 8.0;   // seconds
+    int time_steps = 20000;
+    int dim_y = 60;
+    double dt = physical_time / time_steps;
+    double dx = physical_length / (double)dim_y;
+    double speed_scale = dx / dt; // lattice to m/s
+
+    // Set scaling based on scalar_name
+    if (std::string(scalar_name) == "speed_m_per_s") {
+        value_scale = speed_scale;
+    } else if (std::string(scalar_name) == "density") {
+        value_scale = physical_density; // lattice density is 1.0 -> physical_density
+    } else if (std::string(scalar_name) == "vorticity") {
+        value_scale = speed_scale / dx; // lattice vorticity (1/timestep) -> 1/s
+    }
+
+    int total_x = lbm->getTotalDimX();
+    int total_y = lbm->getTotalDimY();
+    int total_z = lbm->getTotalDimZ();
+    FILE* fp = fopen(filename, "w");
+    if (!fp) {
+        fprintf(stderr, "Error: could not open %s for writing\n", filename);
+        return;
+    }
+    // Write header
+    fprintf(fp, "# x y z %s\n", scalar_name);
+    for (int k = 0; k < total_z; ++k) {
+        for (int j = 0; j < total_y; ++j) {
+            for (int i = 0; i < total_x; ++i) {
+                int idx = i + total_x * (j + total_y * k);
+                float value = gathered[idx] * value_scale;
+                fprintf(fp, "%d %d %d %.6f\n", i, j, k, value);
+            }
+        }
+    }
+    fclose(fp);
+    printf("Export completed successfully\n");
+}
+
+void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename) {
+    // Choose which scalar to export by changing this line:
+    float* gathered = lbm->getGatheredSpeed(); // <-- Change to getGatheredVorticity() or getGatheredDensity() as needed
+    if (!gathered) {
+        fprintf(stderr, "Error: gathered array is NULL!\n");
+        return;
+    }
+    const char* scalar_name = "speed_m_per_s"; // <-- Change to "vorticity" or "density" or "speed_m_per_s" to match above
+    double value_scale = 1.0; // <-- Will be set below
+
+    // Physical parameters (should match those in runLbmCfdSimulation)
+    double physical_density = 1380.0; // kg/m^3
+    double physical_length = 2.0; // meters
+    double physical_time = 8.0;   // seconds
+    int time_steps = 20000;
+    int dim_y = 60;
+    double dt = physical_time / time_steps;
+    double dx = physical_length / (double)dim_y;
+    double speed_scale = dx / dt; // lattice to m/s
+
+    // Set scaling based on scalar_name
+    if (std::string(scalar_name) == "speed_m_per_s") {
+        value_scale = speed_scale;
+    } else if (std::string(scalar_name) == "density") {
+        value_scale = physical_density; // lattice density is 1.0 -> physical_density
+    } else if (std::string(scalar_name) == "vorticity") {
+        value_scale = speed_scale / dx; // lattice vorticity (1/timestep) -> 1/s
+    }
+
+    int total_x = lbm->getTotalDimX();
+    int total_y = lbm->getTotalDimY();
+    int total_z = lbm->getTotalDimZ();
+    FILE* fp = fopen(filename, "w");
+    if (!fp) {
+        fprintf(stderr, "Error: could not open %s for writing\n", filename);
+        return;
+    }
+    // Write VTK header
+    fprintf(fp, "# vtk DataFile Version 3.0\n");
+    fprintf(fp, "LBM Simulation Data (%s)\n", scalar_name);
+    fprintf(fp, "ASCII\n");
+    fprintf(fp, "DATASET STRUCTURED_GRID\n");
+    fprintf(fp, "DIMENSIONS %d %d %d\n", total_x, total_y, total_z);
+    fprintf(fp, "POINTS %d float\n", total_x * total_y * total_z);
+    // Write coordinates
+    for (int k = 0; k < total_z; ++k) {
+        for (int j = 0; j < total_y; ++j) {
+            for (int i = 0; i < total_x; ++i) {
+                fprintf(fp, "%d %d %d\n", i, j, k);
+            }
+        }
+    }
+    // Write scalar data
+    fprintf(fp, "POINT_DATA %d\n", total_x * total_y * total_z);
+    fprintf(fp, "SCALARS %s float 1\n", scalar_name);
+    fprintf(fp, "LOOKUP_TABLE default\n");
+    for (int k = 0; k < total_z; ++k) {
+        for (int j = 0; j < total_y; ++j) {
+            for (int i = 0; i < total_x; ++i) {
+                int idx = i + total_x * (j + total_y * k);
+                fprintf(fp, "%.6f\n", gathered[idx] * value_scale);
+            }
+        }
+    }
+    fclose(fp);
+    printf("VTK export completed: %s\n", filename);
 }
