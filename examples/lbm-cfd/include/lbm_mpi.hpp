@@ -201,6 +201,35 @@ class LbmDQ
 	std::vector<float> f_Old;
 	size_t last_size;
 
+	// MPI particle streaming buffers
+	struct ParticleBuffer {
+		std::vector<float> particles;  // Particle values
+		std::vector<int> directions;   // Direction indices
+		std::vector<int> positions;    // Target positions (i,j,k packed)
+
+		void clear() {
+			particles.clear();
+			directions.clear();
+			positions.clear();
+		}
+
+		void addParticle(float value, int dir, int i, int j, int k) {
+			particles.push_back(value);
+			directions.push_back(dir);
+			positions.push_back(i + 1000 * (j + 1000 * k));  // Pack i,j,k
+		}
+
+		void unpackPosition(int packed, int& i, int& j, int& k) {
+			k = packed / 1000000;
+			packed %= 1000000;
+			j = packed / 1000;
+			i = packed % 1000;
+		}
+	};
+
+	ParticleBuffer send_buffers[10];  // One for each neighbor direction
+	ParticleBuffer recv_buffers[10];
+
 	// Helper function to print memory usage
         void printMemoryUsage(const char* label, size_t bytes) {
             double mb = bytes / (1024.0 * 1024.0);
@@ -248,9 +277,7 @@ class LbmDQ
         void computeVorticity();
         void gatherDataOnRank0(FluidProperty property);
         void exchangeBoundaries();
-	void exchangeSimpleBoundaries();
-	void handleMPIBoundaryStreaming(int i, int j, int k, int ni, int nj, int nk, int d, float value);
-        void storeBoundaryParticle(int neighbor_dir, int ni, int nj, int nk, int d, float value);
+	void captureBoundaryParticle(int i, int j, int k, int ni, int nj, int nk, int d, float value);
 	uint32_t getDimX();
         uint32_t getDimY();
 	uint32_t getDimZ();
@@ -894,7 +921,6 @@ void LbmDQ::initFluid(double physical_speed)
         for (j = 0; j < dim_y; j++) {
             for (i = 0; i < dim_x; i++) {
 	    	if ((offset_x + i) == 0) {
-                //setEquilibrium(i, j, k, speed, 0.0, 0.0, 1.0);
                     setEquilibrium(i, j, k, speed, 0.0, 0.0, 1.0); // Inlet face: flow in +X
                 } else {
                     setEquilibrium(i, j, k, 0.0, 0.0, 0.0, 1.0); // Rest of domain: at rest
@@ -934,14 +960,12 @@ void LbmDQ::updateFluid(double physical_speed)
                 double uz = 0.0;
                 
                 // Only update outgoing directions (towards +x) to impose velocity
-                // For D3Q15, directions 1,7,8,9,10 go in +x direction
                 double usq = ux*ux + uy*uy + uz*uz;
                 for (int d = 0; d < Q; ++d) {
                     if (c[d][0] > 0) { // Only +x directions
                         double cu = 3.0 * (c[d][0] * ux + c[d][1] * uy + c[d][2] * uz);
                         fPtr[d][idx] = w[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usq);
                     }
-                    // Leave incoming directions unchanged to allow natural flow development
                 }
 		
 		if (do_print && j == dim_y/2 && k == dim_z/2) {
@@ -950,25 +974,8 @@ void LbmDQ::updateFluid(double physical_speed)
             }
         }
     }
-    if (do_print) {
-        //printf("[Rank %d][updateFluid] END step %d\n", rank, call_count);
-    }
     call_count++;
 }
-//{
-//    int i; int j; int k;
-//    double speed = speed_scale * physical_speed;
-//    //static int call_count = 0;
-//    for (k = 0; k < dim_z; k++)
-//    {
-//        for (j = 0; j < dim_y; j++)
-//        {
-//            if ((offset_x + 0) == 0) {
-//                setEquilibrium(0, j, k, speed, 0.0, 0.0, 1.0);
-//            }
-//        }
-//    }
-//}
 
 // particle collision
 void LbmDQ::collide(double viscosity, int t)
@@ -981,14 +988,6 @@ void LbmDQ::collide(double viscosity, int t)
 	    omega_printed = true;
 	}
         int arrsize = dim_x * dim_y * dim_z;
-        static int collide_call_count = 0;
-        int i_debug = 1, j_debug = dim_y / 2, k_debug = dim_z / 2;  // Cell adjacent to inlet
-	int idx_debug = idx3D(i_debug, j_debug, k_debug);
-        //if (rank < 2 && collide_call_count < 3) {
-        //    //printf("[Rank %d][collide][before][step=%d] fPtr[:,%d,%d,%d]: ", rank, collide_call_count, i_debug, j_debug, k_debug);
-        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
-        //    printf("\n");
-        //}
         static bool first_invalid_rho_printed = false;	
 	for (k = 0; k < dim_z; k++)
 	{
@@ -1094,37 +1093,17 @@ void LbmDQ::collide(double viscosity, int t)
 					LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "fPtr[d] update");
 					double old_f = fPtr[d][idx];
 					fPtr[d][idx] += omega * (feq - fPtr[d][idx]);
-					// Debug for specific position
-					//if (rank == 0 && idx == idx_debug && d == 0 && collide_call_count < 3) {
-					//    printf("[DEBUG][collide] d=%d: old_f=%f, feq=%f, omega=%f, new_f=%f\n", d, old_f, feq, omega, fPtr[d][idx]);
-					//}
 				}
 			}
 		}
 	}
 	printDblArraysGuardCorruption("collideG");
-	//if (rank < 2 && collide_call_count < 3) {
-        //    printf("[Rank %d][collide][after][step=%d] fPtr[:,%d,%d,%d]: ", rank, collide_call_count, i_debug, j_debug, k_debug);
-        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
-        //    printf("\n");
-        //    collide_call_count++;
-	//}
 }
 	
 // Optimized particle streaming - eliminates memory allocation/deallocation
 void LbmDQ::stream()
 {
 	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
-
-	// Debug: Print fPtr at a single interior node before streaming (first 3 steps, first 2 ranks)
-        static int stream_call_count = 0;
-        int i_debug = 1, j_debug = dim_y / 2, k_debug = dim_z / 2;  // Cell adjacent to inlet
-        int idx_debug = idx3D(i_debug, j_debug, k_debug);
-        //if (rank < 2 && stream_call_count < 3) {
-        //    printf("[Rank %d][stream][before][step=%d] fPtr[:,%d,%d,%d]: ", rank, stream_call_count, i_debug, j_debug, k_debug);
-        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
-        //    printf("\n");
-        //}
 
 	// Use a static buffer to avoid repeated allocation/deallocation
 	static std::vector<std::vector<float>> temp_buffer_per_rank;
@@ -1197,6 +1176,8 @@ void LbmDQ::stream()
 
 					// Check if destination is out of bounds
 					if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) {
+						// Capture particle for MPI exchange
+						captureBoundaryParticle(i, j, k, ni, nj, nk, d, temp_all_directions[rank][d * slice + idx]);
 						continue;
 					}
 					
@@ -1251,110 +1232,7 @@ void LbmDQ::stream()
 		}
 	}
 	printDblArraysGuardCorruption("stream");
-	// Debug: Print fPtr at the same interior node after streaming
-        //if (rank < 2 && stream_call_count < 3) {
-        //    printf("[Rank %d][stream][after][step=%d] fPtr[:,%d,%d,%d]: ", rank, stream_call_count, i_debug, j_debug, k_debug);
-        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
-        //    printf("\n");
-        //    stream_call_count++;
-        //}
 }
-
-// Optimized bounce-back streaming - eliminates memory allocation/deallocation
-//void LbmDQ::bounceBackStream()
-//{
-//        // Use a static buffer to avoid repeated allocation/deallocation
-//        static std::vector<std::vector<float>> f_Old_per_rank;
-//        static std::vector<std::vector<int>> opposite_dir_per_rank;
-//        static std::vector<size_t> last_size_per_rank;
-//        
-//        // Ensure we have enough entries for all ranks
-//        if (f_Old_per_rank.size() <= static_cast<size_t>(rank)) {
-//            f_Old_per_rank.resize(rank + 1);
-//            opposite_dir_per_rank.resize(rank + 1);
-//            last_size_per_rank.resize(rank + 1);
-//        }
-//        
-//        size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
-//        size_t total_size = Q * slice;
-//        
-//        // Only resize if needed for this rank
-//        if (f_Old_per_rank[rank].size() != total_size) {
-//            f_Old_per_rank[rank].resize(total_size);
-//            last_size_per_rank[rank] = total_size;
-//        }
-//        
-//        // Copy current state
-//        for (int d = 0; d < Q; ++d) {
-//            LBM_BOUNDS_CHECK(d * slice, total_size, "bounceBackStream f_Old copy");
-//            LBM_EXTRA_BOUNDS_CHECK(d * slice, total_size, "f_Old copy");
-//            std::memcpy(f_Old_per_rank[rank].data() + d * slice, fPtr[d], slice * sizeof(float));
-//        }
-//
-//	// Pre-compute opposite directions for better performance (rank-specific)
-//	if (opposite_dir_per_rank[rank].size() != Q) {
-//		opposite_dir_per_rank[rank].resize(Q);    
-//	    // Initialize all to -1 (invalid)
-//		for (int d = 0; d < Q; ++d) {
-//			opposite_dir_per_rank[rank][d] = -1;
-//		}
-//		// Find opposite directions
-//		for (int d = 0; d < Q; ++d) {
-//			for (int dd = 0; dd < Q; ++dd) {
-//	    			if (c[dd][0] == -c[d][0] && c[dd][1] == -c[d][1] && c[dd][2] == -c[d][2]) {
-//					opposite_dir_per_rank[rank][d] = dd;
-//					break;
-//				}
-//			}
-//		}
-//	}
-//
-//	// Optimized bounce-back with better cache locality
-//	for (int k = 0; k < dim_z; ++k) {
-//            for (int j = 0; j < dim_y; ++j) {
-//                for (int i = 0; i < dim_x; ++i) {
-//                    int idx = idx3D(i, j, k);
-//                    LBM_BOUNDS_CHECK(idx, slice, "bounceBackStream idx");
-//                    for (int d = 1; d < Q; ++d) {
-//                        LBM_BOUNDS_CHECK(d, Q, "bounceBackStream direction");
-//                        int ni = i + c[d][0];
-//                        int nj = j + c[d][1];
-//                        int nk = k + c[d][2];
-//                        if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) continue;
-//                        int nidx = idx3D(ni, nj, nk);
-//                        LBM_BOUNDS_CHECK(nidx, slice, "bounceBackStream nidx");
-//                        LBM_BOUNDS_CHECK(nidx, slice, "bounceBackStream barrier access");
-//                        if (barrier[nidx]) {
-//                            int od = opposite_dir_per_rank[rank][d];
-//                            LBM_BOUNDS_CHECK(od, Q, "bounceBackStream opposite direction");
-//                            if (od >= 0 && od < Q) {
-//                                size_t f_old_idx = od * slice + idx;
-//                                LBM_BOUNDS_CHECK(f_old_idx, total_size, "bounceBackStream f_Old access");
-//				LBM_EXTRA_BOUNDS_CHECK(f_old_idx, total_size, "bounceBackStream f_Old access");
-//				float* base_ptr = dbl_arrays;
-//                                float* end_ptr = dbl_arrays + (Q+6)*slice;
-//                                float* write_ptr = fPtr[d] + idx;
-//                                fPtr[d][idx] = f_Old_per_rank[rank][f_old_idx];
-//                            }
-//                        }
-//                    }
-//                }
-//            }
-//        }
-//    	printDblArraysGuardCorruption("bounceBackStream");
-//
-//	// If guard is corrupted, print 10 values before and after the first corrupted guard index
-//    if (guard_corruption_reported) {
-//        uint32_t size = dim_x * dim_y * dim_z;
-//        int first_guard = (Q + 6) * size;
-//        fprintf(stderr, "[Rank %d] DUMP: dbl_arrays around guard region:", rank);
-//	for (int i = first_guard - 10; i < first_guard + GUARD_SIZE + 10; ++i) {
-//            if (i >= 0 && i < (int)((Q+6)*size + GUARD_SIZE)) {
-//                fprintf(stderr, "[Rank %d] dbl_arrays[%d] = %d", rank, i, dbl_arrays[i]);
-//	    }
-//        }
-//    }
-//}
 
 // check if simulation has become unstable (if so, more time steps are required)
 bool LbmDQ::checkStability()
@@ -1708,497 +1586,142 @@ void LbmDQ::getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, i
     *n_z = best_z;
 }
 
+// Capture particles that need to be sent to neighboring MPI ranks
+void LbmDQ::captureBoundaryParticle(int i, int j, int k, int ni, int nj, int nk, int d, float value)
+{
+    // Determine which neighbor this particle should go to
+    int neighbor_idx = -1;
+    int target_i = ni, target_j = nj, target_k = nk;
+
+    // Map out-of-bounds coordinates to neighbor domains
+    if (ni < 0) {
+        neighbor_idx = NeighborW;
+        target_i = dim_x - 1;  // Goes to rightmost layer of west neighbor
+    } else if (ni >= dim_x) {
+        neighbor_idx = NeighborE;
+        target_i = 0;  // Goes to leftmost layer of east neighbor
+    }
+
+    if (nj < 0) {
+        if (neighbor_idx == -1) {
+            neighbor_idx = NeighborS;
+            target_j = dim_y - 1;  // Goes to top layer of south neighbor
+        } else {
+            // Corner case - need to handle diagonal neighbors
+            if (neighbor_idx == NeighborW) neighbor_idx = NeighborSW;
+            else if (neighbor_idx == NeighborE) neighbor_idx = NeighborSE;
+            target_j = dim_y - 1;
+        }
+    } else if (nj >= dim_y) {
+        if (neighbor_idx == -1) {
+            neighbor_idx = NeighborN;
+            target_j = 0;  // Goes to bottom layer of north neighbor
+        } else {
+            // Corner case - need to handle diagonal neighbors
+            if (neighbor_idx == NeighborW) neighbor_idx = NeighborNW;
+            else if (neighbor_idx == NeighborE) neighbor_idx = NeighborNE;
+            target_j = 0;
+        }
+    }
+
+    if (nk < 0) {
+        neighbor_idx = NeighborDown;
+        target_k = dim_z - 1;  // Goes to top layer of down neighbor
+    } else if (nk >= dim_z) {
+        neighbor_idx = NeighborUp;
+        target_k = 0;  // Goes to bottom layer of up neighbor
+    }
+
+    // Store particle in appropriate send buffer
+    if (neighbor_idx >= 0 && neighbor_idx < 10 && neighbors[neighbor_idx] != MPI_PROC_NULL) {
+        send_buffers[neighbor_idx].addParticle(value, d, target_i, target_j, target_k);
+    }
+}
+
 // private - exchange boundary information between MPI ranks
 void LbmDQ::exchangeBoundaries()
 {
-    // Simple ghost cell exchange approach
-    static int call_count = 0;
-    if (rank == 0 && call_count < 3) {
-        printf("[DEBUG] MPI exchange attempt %d\n", call_count);
-    }
-    call_count++;
-    
-    // Try simple boundary layer copying between adjacent domains
-    exchangeSimpleBoundaries();
-    return;
-
-    uint32_t size = dim_x * dim_y * dim_z;
-    
-    // Debug: Print boundary values before exchange
-    //static int exchange_call_count = 0;
-    //if (rank < 2 && exchange_call_count < 3) {
-    //    int debug_idx = idx3D(1, dim_y / 2, dim_z / 2);
-    //    printf("[Rank %d][exchange][before][step=%d] fPtr[:,%d,%d,%d]: ", rank, exchange_call_count, 1, dim_y / 2, dim_z / 2);
-    //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][debug_idx]);
-    //    printf("\n");
-    //}
-    
-    MPI_Barrier(cart_comm);
-
-    // Create local datatypes for boundary exchange using local domain size
-    int local_sizes3D[3] = {int(dim_z), int(dim_y), int(dim_x)};
-    
-    // Create local face datatypes for boundary exchange
-    MPI_Datatype local_faceN, local_faceS, local_faceE, local_faceW;
-    MPI_Datatype local_faceNE, local_faceNW, local_faceSE, local_faceSW;
-    MPI_Datatype local_faceZlo, local_faceZhi;
-    
-    // North-South faces (local)
-    int local_subsN[3] = {int(dim_z), 1, int(dim_x)};
-    int local_offsN[3] = {0, int(dim_y - 1), 0};  // North face
-    int local_offsS[3] = {0, 0, 0};               // South face
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsN, local_offsN, MPI_ORDER_C, MPI_FLOAT, &local_faceN);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsN, local_offsS, MPI_ORDER_C, MPI_FLOAT, &local_faceS);
-    MPI_Type_commit(&local_faceN);
-    MPI_Type_commit(&local_faceS);
-    
-    // East-West faces (local)
-    int local_subsE[3] = {int(dim_z), int(dim_y), 1};
-    int local_offsE[3] = {0, 0, int(dim_x - 1)};  // East face
-    int local_offsW[3] = {0, 0, 0};               // West face
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsE, local_offsE, MPI_ORDER_C, MPI_FLOAT, &local_faceE);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsE, local_offsW, MPI_ORDER_C, MPI_FLOAT, &local_faceW);
-    MPI_Type_commit(&local_faceE);
-    MPI_Type_commit(&local_faceW);
-    
-    // Corner faces (local)
-    int local_subsNE[3] = {int(dim_z), 1, 1};
-    int local_offsNE[3] = {0, int(dim_y - 1), int(dim_x - 1)};  // Northeast
-    int local_offsNW[3] = {0, int(dim_y - 1), 0};               // Northwest
-    int local_offsSE[3] = {0, 0, int(dim_x - 1)};               // Southeast
-    int local_offsSW[3] = {0, 0, 0};                            // Southwest
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsNE, MPI_ORDER_C, MPI_FLOAT, &local_faceNE);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsNW, MPI_ORDER_C, MPI_FLOAT, &local_faceNW);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsSE, MPI_ORDER_C, MPI_FLOAT, &local_faceSE);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsSW, MPI_ORDER_C, MPI_FLOAT, &local_faceSW);
-    MPI_Type_commit(&local_faceNE);
-    MPI_Type_commit(&local_faceNW);
-    MPI_Type_commit(&local_faceSE);
-    MPI_Type_commit(&local_faceSW);
-    
-    // Z faces (local)
-    int local_subsZ[3] = {1, int(dim_y), int(dim_x)};
-    int local_offsZlo[3] = {0, 0, 0};               // Z low face
-    int local_offsZhi[3] = {int(dim_z - 1), 0, 0};  // Z high face
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsZ, local_offsZlo, MPI_ORDER_C, MPI_FLOAT, &local_faceZlo);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsZ, local_offsZhi, MPI_ORDER_C, MPI_FLOAT, &local_faceZhi);
-    MPI_Type_commit(&local_faceZlo);
-    MPI_Type_commit(&local_faceZhi);
-
-    // Exchange data for all distribution functions
-    for (int d = 0; d < Q; ++d) {
-        // North-South exchange
-        if (neighbors[NeighborN] != MPI_PROC_NULL || neighbors[NeighborS] != MPI_PROC_NULL) {
-            int type_size = 0;
-            MPI_Type_size(local_faceN, &type_size);
-            size_t buf_size = size * sizeof(float);
-            size_t floats_in_type = type_size / sizeof(float);
-            float* buf_start = fPtr[d];
-            float* buf_end = fPtr[d] + size - 1;
-            float* type_end = fPtr[d] + floats_in_type - 1;
-            if (floats_in_type > size) {
-                fprintf(stderr, "[Rank %d] FATAL: local_faceN MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            if (type_end > buf_end) {
-                fprintf(stderr, "[Rank %d] ERROR: local_faceN MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceN, neighbors[NeighborN], TAG_F,
-                     fPtr[d], 1, local_faceS, neighbors[NeighborS], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE));
-        }
-        // East-West exchange
-        if (neighbors[NeighborE] != MPI_PROC_NULL || neighbors[NeighborW] != MPI_PROC_NULL) {
-            int type_size = 0;
-            MPI_Type_size(local_faceE, &type_size);
-            size_t buf_size = size * sizeof(float);
-            size_t floats_in_type = type_size / sizeof(float);
-            float* buf_start = fPtr[d];
-            float* buf_end = fPtr[d] + size - 1;
-            float* type_end = fPtr[d] + floats_in_type - 1;
-            if (floats_in_type > size) {
-                fprintf(stderr, "[Rank %d] FATAL: local_faceE MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            if (type_end > buf_end) {
-                fprintf(stderr, "[Rank %d] ERROR: local_faceE MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceE, neighbors[NeighborE], TAG_F,
-                     fPtr[d], 1, local_faceW, neighbors[NeighborW], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE));
-        }
-        // Northeast-Southwest exchange
-        if (neighbors[NeighborNE] != MPI_PROC_NULL || neighbors[NeighborSW] != MPI_PROC_NULL) {
-            int type_size = 0;
-            MPI_Type_size(local_faceNE, &type_size);
-            size_t buf_size = size * sizeof(float);
-            size_t floats_in_type = type_size / sizeof(float);
-            float* buf_start = fPtr[d];
-            float* buf_end = fPtr[d] + size - 1;
-            float* type_end = fPtr[d] + floats_in_type - 1;
-            if (floats_in_type > size) {
-                fprintf(stderr, "[Rank %d] FATAL: local_faceNE MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            if (type_end > buf_end) {
-                fprintf(stderr, "[Rank %d] ERROR: local_faceNE MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceNE, neighbors[NeighborNE], TAG_F,
-                     fPtr[d], 1, local_faceSW, neighbors[NeighborSW], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE));
-        }
-        // Northwest-Southeast exchange
-        if (neighbors[NeighborNW] != MPI_PROC_NULL || neighbors[NeighborSE] != MPI_PROC_NULL) {
-            int type_size = 0;
-            MPI_Type_size(local_faceNW, &type_size);
-            size_t buf_size = size * sizeof(float);
-            size_t floats_in_type = type_size / sizeof(float);
-            float* buf_start = fPtr[d];
-            float* buf_end = fPtr[d] + size - 1;
-            float* type_end = fPtr[d] + floats_in_type - 1;
-            if (floats_in_type > size) {
-                fprintf(stderr, "[Rank %d] FATAL: local_faceNW MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            if (type_end > buf_end) {
-                fprintf(stderr, "[Rank %d] ERROR: local_faceNW MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceNW, neighbors[NeighborNW], TAG_F,
-                     fPtr[d], 1, local_faceSE, neighbors[NeighborSE], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE));
-        }
-        // Up-Down exchange
-        if (neighbors[NeighborDown] != MPI_PROC_NULL || neighbors[NeighborUp] != MPI_PROC_NULL) {
-            int type_size = 0;
-            MPI_Type_size(local_faceZlo, &type_size);
-            size_t buf_size = size * sizeof(float);
-            size_t floats_in_type = type_size / sizeof(float);
-            float* buf_start = fPtr[d];
-            float* buf_end = fPtr[d] + size - 1;
-            float* type_end = fPtr[d] + floats_in_type - 1;
-            if (floats_in_type > size) {
-                fprintf(stderr, "[Rank %d] FATAL: local_faceZlo MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            if (type_end > buf_end) {
-                fprintf(stderr, "[Rank %d] ERROR: local_faceZlo MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
-		MPI_Abort(MPI_COMM_WORLD, 1);
-            }
-            MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceZlo, neighbors[NeighborDown], TAG_F,
-                     fPtr[d], 1, local_faceZhi, neighbors[NeighborUp], TAG_F,
-                     cart_comm, MPI_STATUS_IGNORE));
-        }
-    }
-    MPI_Barrier(cart_comm);
-
-// Clean up local datatypes
-    MPI_Type_free(&local_faceN);
-    MPI_Type_free(&local_faceS);
-    MPI_Type_free(&local_faceE);
-    MPI_Type_free(&local_faceW);
-    MPI_Type_free(&local_faceNE);
-    MPI_Type_free(&local_faceNW);
-    MPI_Type_free(&local_faceSE);
-    MPI_Type_free(&local_faceSW);
-    MPI_Type_free(&local_faceZlo);
-    MPI_Type_free(&local_faceZhi);
-
-    // Create local datatypes for scalar fields (density, velocity)
-    MPI_Datatype local_scalar_faceN, local_scalar_faceS, local_scalar_faceE, local_scalar_faceW;
-    MPI_Datatype local_scalar_faceNE, local_scalar_faceNW, local_scalar_faceSE, local_scalar_faceSW;
-    MPI_Datatype local_scalar_faceZlo, local_scalar_faceZhi;
-    
-    // North-South faces for scalar fields (local)
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsN, local_offsN, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceN);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsN, local_offsS, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceS);
-    MPI_Type_commit(&local_scalar_faceN);
-    MPI_Type_commit(&local_scalar_faceS);
-    
-    // East-West faces for scalar fields (local)
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsE, local_offsE, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceE);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsE, local_offsW, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceW);
-    MPI_Type_commit(&local_scalar_faceE);
-    MPI_Type_commit(&local_scalar_faceW);
-    
-    // Corner faces for scalar fields (local)
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsNE, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceNE);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsNW, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceNW);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsSE, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceSE);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsNE, local_offsSW, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceSW);
-    MPI_Type_commit(&local_scalar_faceNE);
-    MPI_Type_commit(&local_scalar_faceNW);
-    MPI_Type_commit(&local_scalar_faceSE);
-    MPI_Type_commit(&local_scalar_faceSW);
-    
-    // Z faces for scalar fields (local)
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsZ, local_offsZlo, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceZlo);
-    MPI_Type_create_subarray(3, local_sizes3D, local_subsZ, local_offsZhi, MPI_ORDER_C, MPI_FLOAT, &local_scalar_faceZhi);
-    MPI_Type_commit(&local_scalar_faceZlo);
-    MPI_Type_commit(&local_scalar_faceZhi);
-
-    // density - use local datatypes
-    if (neighbors[NeighborN] != MPI_PROC_NULL || neighbors[NeighborS] != MPI_PROC_NULL) {
-        int type_size = 0;
-        MPI_Type_size(local_scalar_faceN, &type_size);
-        size_t buf_size = size * sizeof(float);
-        if ((size_t)type_size > buf_size) {
-            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceN datatype size exceeds buffer size for density!", rank);
-	    MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-        MPI_Sendrecv(density, 1, local_scalar_faceN, neighbors[NeighborN], TAG_D,
-                 density, 1, local_scalar_faceS, neighbors[NeighborS], TAG_D,
-                 cart_comm, MPI_STATUS_IGNORE);
+    // Clear previous receive buffers
+    for (int i = 0; i < 10; ++i) {
+        recv_buffers[i].clear();
     }
 
-    if (neighbors[NeighborE] != MPI_PROC_NULL || neighbors[NeighborW] != MPI_PROC_NULL) {
-        int type_size = 0;
-        MPI_Type_size(local_scalar_faceE, &type_size);
-        size_t buf_size = size * sizeof(float);
-        if ((size_t)type_size > buf_size) {
-            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceE datatype size exceeds buffer size for density!", rank);
-	    MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-        MPI_Sendrecv(density, 1, local_scalar_faceE, neighbors[NeighborE], TAG_D,
-                 density, 1, local_scalar_faceW, neighbors[NeighborW], TAG_D,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
+    // Exchange particle buffers with all neighbors
+    for (int neighbor_idx = 0; neighbor_idx < 10; ++neighbor_idx) {
+        if (neighbors[neighbor_idx] == MPI_PROC_NULL) continue;
 
-    if (neighbors[NeighborNE] != MPI_PROC_NULL || neighbors[NeighborSW] != MPI_PROC_NULL) {
-        int type_size = 0;
-        MPI_Type_size(local_scalar_faceNE, &type_size);
-        size_t buf_size = size * sizeof(float);
-        if ((size_t)type_size > buf_size) {
-            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceNE datatype size exceeds buffer size for density!", rank);
-	    MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-        MPI_Sendrecv(density, 1, local_scalar_faceNE, neighbors[NeighborNE], TAG_D,
-                 density, 1, local_scalar_faceSW, neighbors[NeighborSW], TAG_D,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
+        ParticleBuffer& send_buf = send_buffers[neighbor_idx];
+        ParticleBuffer& recv_buf = recv_buffers[neighbor_idx];
 
-    if (neighbors[NeighborNW] != MPI_PROC_NULL || neighbors[NeighborSE] != MPI_PROC_NULL) {
-        int type_size = 0;
-        MPI_Type_size(local_scalar_faceNW, &type_size);
-        size_t buf_size = size * sizeof(float);
-        if ((size_t)type_size > buf_size) {
-            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceNW datatype size exceeds buffer size for density!", rank);
-	    MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-        MPI_Sendrecv(density, 1, local_scalar_faceNW, neighbors[NeighborNW], TAG_D,
-                 density, 1, local_scalar_faceSE, neighbors[NeighborSE], TAG_D,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
+        // Exchange buffer sizes first
+        int send_size = send_buf.particles.size();
+        int recv_size = 0;
 
-    if (neighbors[NeighborDown] != MPI_PROC_NULL || neighbors[NeighborUp] != MPI_PROC_NULL) {
-        int type_size = 0;
-        MPI_Type_size(local_scalar_faceZlo, &type_size);
-        size_t buf_size = size * sizeof(float);
-        if ((size_t)type_size > buf_size) {
-            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceZlo datatype size exceeds buffer size for density!", rank);
-	    MPI_Abort(MPI_COMM_WORLD, 1);
-        }
-        MPI_Sendrecv(density, 1, local_scalar_faceZlo, neighbors[NeighborDown], TAG_D,
-                 density, 1, local_scalar_faceZhi, neighbors[NeighborUp], TAG_D,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    // velocity_x - use local datatypes
-    if (neighbors[NeighborN] != MPI_PROC_NULL || neighbors[NeighborS] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_x, 1, local_scalar_faceN, neighbors[NeighborN], TAG_VX,
-                 velocity_x, 1, local_scalar_faceS, neighbors[NeighborS], TAG_VX,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborE] != MPI_PROC_NULL || neighbors[NeighborW] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_x, 1, local_scalar_faceE, neighbors[NeighborE], TAG_VX,
-                 velocity_x, 1, local_scalar_faceW, neighbors[NeighborW], TAG_VX,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborNE] != MPI_PROC_NULL || neighbors[NeighborSW] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_x, 1, local_scalar_faceNE, neighbors[NeighborNE], TAG_VX,
-                 velocity_x, 1, local_scalar_faceSW, neighbors[NeighborSW], TAG_VX,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborNW] != MPI_PROC_NULL || neighbors[NeighborSE] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_x, 1, local_scalar_faceNW, neighbors[NeighborNW], TAG_VX,
-                 velocity_x, 1, local_scalar_faceSE, neighbors[NeighborSE], TAG_VX,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborDown] != MPI_PROC_NULL || neighbors[NeighborUp] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_x, 1, local_scalar_faceZlo, neighbors[NeighborDown], TAG_VX,
-                 velocity_x, 1, local_scalar_faceZhi, neighbors[NeighborUp], TAG_VX,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    // velocity_y - use local datatypes
-    if (neighbors[NeighborN] != MPI_PROC_NULL || neighbors[NeighborS] != MPI_PROC_NULL) {
-	MPI_Sendrecv(velocity_y, 1, local_scalar_faceN, neighbors[NeighborN], TAG_VY,
-                 velocity_y, 1, local_scalar_faceS, neighbors[NeighborS], TAG_VY,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborE] != MPI_PROC_NULL || neighbors[NeighborW] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_y, 1, local_scalar_faceE, neighbors[NeighborE], TAG_VY,
-                 velocity_y, 1, local_scalar_faceW, neighbors[NeighborW], TAG_VY,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborNE] != MPI_PROC_NULL || neighbors[NeighborSW] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_y, 1, local_scalar_faceNE, neighbors[NeighborNE], TAG_VY,
-                 velocity_y, 1, local_scalar_faceSW, neighbors[NeighborSW], TAG_VY,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborNW] != MPI_PROC_NULL || neighbors[NeighborSE] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_y, 1, local_scalar_faceNW, neighbors[NeighborNW], TAG_VY,
-                 velocity_y, 1, local_scalar_faceSE, neighbors[NeighborSE], TAG_VY,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborDown] != MPI_PROC_NULL || neighbors[NeighborUp] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_y, 1, local_scalar_faceZlo, neighbors[NeighborDown], TAG_VY,
-                 velocity_y, 1, local_scalar_faceZhi, neighbors[NeighborUp], TAG_VY,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    // velocity_z - use local datatypes
-    if (neighbors[NeighborN] != MPI_PROC_NULL || neighbors[NeighborS] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_z, 1, local_scalar_faceN, neighbors[NeighborN], TAG_VZ,
-                 velocity_z, 1, local_scalar_faceS, neighbors[NeighborS], TAG_VZ,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborE] != MPI_PROC_NULL || neighbors[NeighborW] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_z, 1, local_scalar_faceE, neighbors[NeighborE], TAG_VZ,
-                 velocity_z, 1, local_scalar_faceW, neighbors[NeighborW], TAG_VZ,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborNE] != MPI_PROC_NULL || neighbors[NeighborSW] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_z, 1, local_scalar_faceNE, neighbors[NeighborNE], TAG_VZ,
-                 velocity_z, 1, local_scalar_faceSW, neighbors[NeighborSW], TAG_VZ,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborNW] != MPI_PROC_NULL || neighbors[NeighborSE] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_z, 1, local_scalar_faceNW, neighbors[NeighborNW], TAG_VZ,
-                 velocity_z, 1, local_scalar_faceSE, neighbors[NeighborSE], TAG_VZ,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    if (neighbors[NeighborDown] != MPI_PROC_NULL || neighbors[NeighborUp] != MPI_PROC_NULL) {
-        MPI_Sendrecv(velocity_z, 1, local_scalar_faceZlo, neighbors[NeighborDown], TAG_VZ,
-                 velocity_z, 1, local_scalar_faceZhi, neighbors[NeighborUp], TAG_VZ,
-                 cart_comm, MPI_STATUS_IGNORE);
-    }
-
-    // Clean up local scalar datatypes
-    MPI_Type_free(&local_scalar_faceN);
-    MPI_Type_free(&local_scalar_faceS);
-    MPI_Type_free(&local_scalar_faceE);
-    MPI_Type_free(&local_scalar_faceW);
-    MPI_Type_free(&local_scalar_faceNE);
-    MPI_Type_free(&local_scalar_faceNW);
-    MPI_Type_free(&local_scalar_faceSE);
-    MPI_Type_free(&local_scalar_faceSW);
-    MPI_Type_free(&local_scalar_faceZlo);
-    MPI_Type_free(&local_scalar_faceZhi);
-
-    MPI_Barrier(cart_comm);
-}
-
-// Simple boundary exchange - copy boundary layers between adjacent domains
-void LbmDQ::exchangeSimpleBoundaries()
-{
-    // Only exchange in X direction (flow direction) for now
-    // Batch all communications to reduce MPI overhead
-    
-    size_t boundary_size = dim_y * dim_z;  // Size of one boundary layer
-    size_t total_size = Q * boundary_size;  // All distribution functions
-    
-    // Allocate temporary buffers
-    static std::vector<float> send_buffer, recv_buffer;
-    send_buffer.resize(total_size);
-    recv_buffer.resize(total_size);
-    
-    // Pack data for sending (rightmost boundary)
-    for (int d = 0; d < Q; ++d) {
-        for (int k = 0; k < dim_z; ++k) {
-            for (int j = 0; j < dim_y; ++j) {
-                int src_idx = idx3D(dim_x - 1, j, k);  // rightmost layer
-                int buf_idx = d * boundary_size + k * dim_y + j;
-                send_buffer[buf_idx] = fPtr[d][src_idx];
-            }
-        }
-    }
-    
-    // Single batched communication in X direction
-    if (neighbors[NeighborE] != MPI_PROC_NULL || neighbors[NeighborW] != MPI_PROC_NULL) {
-        MPI_Sendrecv(send_buffer.data(), total_size, MPI_FLOAT, neighbors[NeighborE], 0,
-                     recv_buffer.data(), total_size, MPI_FLOAT, neighbors[NeighborW], 0,
+        MPI_Sendrecv(&send_size, 1, MPI_INT, neighbors[neighbor_idx], 0,
+                     &recv_size, 1, MPI_INT, neighbors[neighbor_idx], 0,
                      cart_comm, MPI_STATUS_IGNORE);
-                     
-        // Unpack received data (leftmost boundary)
-        if (neighbors[NeighborW] != MPI_PROC_NULL) {
-            for (int d = 0; d < Q; ++d) {
-                for (int k = 0; k < dim_z; ++k) {
-                    for (int j = 0; j < dim_y; ++j) {
-                        int dst_idx = idx3D(0, j, k);  // leftmost layer
-                        int buf_idx = d * boundary_size + k * dim_y + j;
-                        fPtr[d][dst_idx] = recv_buffer[buf_idx];
-                    }
+
+        if (recv_size > 0) {
+            // Resize receive buffers
+            recv_buf.particles.resize(recv_size);
+            recv_buf.directions.resize(recv_size);
+            recv_buf.positions.resize(recv_size);
+
+            // Exchange particle data
+            if (send_size > 0) {
+                MPI_Sendrecv(send_buf.particles.data(), send_size, MPI_FLOAT, neighbors[neighbor_idx], 1,
+                             recv_buf.particles.data(), recv_size, MPI_FLOAT, neighbors[neighbor_idx], 1,
+                             cart_comm, MPI_STATUS_IGNORE);
+
+                MPI_Sendrecv(send_buf.directions.data(), send_size, MPI_INT, neighbors[neighbor_idx], 2,
+                             recv_buf.directions.data(), recv_size, MPI_INT, neighbors[neighbor_idx], 2,
+                             cart_comm, MPI_STATUS_IGNORE);
+
+                MPI_Sendrecv(send_buf.positions.data(), send_size, MPI_INT, neighbors[neighbor_idx], 3,
+                             recv_buf.positions.data(), recv_size, MPI_INT, neighbors[neighbor_idx], 3,
+                             cart_comm, MPI_STATUS_IGNORE);
+            } else {
+                // Only receive
+                MPI_Recv(recv_buf.particles.data(), recv_size, MPI_FLOAT, neighbors[neighbor_idx], 1,
+                         cart_comm, MPI_STATUS_IGNORE);
+                MPI_Recv(recv_buf.directions.data(), recv_size, MPI_INT, neighbors[neighbor_idx], 2,
+                         cart_comm, MPI_STATUS_IGNORE);
+                MPI_Recv(recv_buf.positions.data(), recv_size, MPI_INT, neighbors[neighbor_idx], 3,
+                         cart_comm, MPI_STATUS_IGNORE);
+            }
+        } else if (send_size > 0) {
+            // Only send
+            MPI_Send(send_buf.particles.data(), send_size, MPI_FLOAT, neighbors[neighbor_idx], 1, cart_comm);
+            MPI_Send(send_buf.directions.data(), send_size, MPI_INT, neighbors[neighbor_idx], 2, cart_comm);
+            MPI_Send(send_buf.positions.data(), send_size, MPI_INT, neighbors[neighbor_idx], 3, cart_comm);
+        }
+    }
+
+    // Inject received particles into domain
+    for (int neighbor_idx = 0; neighbor_idx < 10; ++neighbor_idx) {
+        ParticleBuffer& recv_buf = recv_buffers[neighbor_idx];
+
+        for (size_t p = 0; p < recv_buf.particles.size(); ++p) {
+            int i, j, k;
+            recv_buf.unpackPosition(recv_buf.positions[p], i, j, k);
+
+            // Validate coordinates
+            if (i >= 0 && i < dim_x && j >= 0 && j < dim_y && k >= 0 && k < dim_z) {
+                int idx = idx3D(i, j, k);
+                int d = recv_buf.directions[p];
+
+                // Inject particle
+                if (d >= 0 && d < Q) {
+                    fPtr[d][idx] = recv_buf.particles[p];
                 }
             }
         }
     }
+
+    // Clear send buffers for next timestep
+    for (int i = 0; i < 10; ++i) {
+        send_buffers[i].clear();
+    }
 }
 
-// Handle particles that would stream out of bounds - store for MPI exchange
-void LbmDQ::handleMPIBoundaryStreaming(int i, int j, int k, int ni, int nj, int nk, int d, float value)
-{
-    // For now, only handle X-direction (flow direction) boundaries
-    if (ni >= dim_x && neighbors[NeighborE] != MPI_PROC_NULL) {
-        // Particle wants to go to east neighbor
-        // Map it to the correct location in the neighbor domain
-        int neighbor_i = 0;  // Goes to leftmost layer of east neighbor
-        int neighbor_j = nj;
-        int neighbor_k = nk;
-        
-        // Store in a buffer for later exchange
-        storeBoundaryParticle(NeighborE, neighbor_i, neighbor_j, neighbor_k, d, value);
-    }
-    else if (ni < 0 && neighbors[NeighborW] != MPI_PROC_NULL) {
-        // Particle wants to go to west neighbor
-        int neighbor_i = dim_x - 1;  // Goes to rightmost layer of west neighbor
-        int neighbor_j = nj;
-        int neighbor_k = nk;
-        
-        // Store in a buffer for later exchange
-        storeBoundaryParticle(NeighborW, neighbor_i, neighbor_j, neighbor_k, d, value);
-    }
-    // For now, ignore Y and Z boundaries (periodic or no-slip)
-}
-
-// Store particle for MPI boundary exchange
-void LbmDQ::storeBoundaryParticle(int neighbor_dir, int ni, int nj, int nk, int d, float value)
-{
-    // Simple approach: just add to the boundary layer directly
-    // This is a simplified implementation
-    if (neighbor_dir == NeighborE) {
-        // This particle should go to position (0, nj, nk) in the east neighbor
-        // But we don't have direct access to the neighbor's memory
-        // For now, we'll rely on the exchange mechanism
-    }
-    else if (neighbor_dir == NeighborW) {
-        // This particle should go to position (dim_x-1, nj, nk) in the west neighbor
-        // For now, we'll rely on the exchange mechanism
-    }
-}
 #endif // _LBMDQ_MPI_HPP_
