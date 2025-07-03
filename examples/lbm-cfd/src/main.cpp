@@ -213,14 +213,10 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     //}
     lbm->initBarrier(barriers);
     lbm->initFluid(physical_speed);
-
-//    std::cout << "[Rank " << rank << "] Finished lbm->initFluid, about to checkGuards()" << std::endl;
     lbm->checkGuards();
-//    std::cout << "[Rank " << rank << "] Finished checkGuards(), about to call MPI_Barrier" << std::endl;
 
     // sync all processes
     MPI_Barrier(MPI_COMM_WORLD);
-//    std::cout << "[Rank " << rank << "] Finished MPI_Barrier, about to enter simulation loop" << std::endl;
 
     // run simulation
     int t;
@@ -238,7 +234,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     int i;
     conduit::Node selections;
 #endif
-//    std::cout << "[Rank " << rank << "] About to start simulation loop (for t)" << std::endl;
+    
     for (t = 0; t < time_steps; t++)
     {
         // enforce inlet boundary at every step
@@ -330,17 +326,6 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         std::cout << "Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / time_steps << "s" << std::endl;
         std::cout << "Steps/sec:      " << std::fixed << std::setprecision(2) << time_steps / total_iteration_time.count() << std::endl;
         std::cout << "========================" << std::endl;
-    }
-
-    // Print last 5 values and guard bytes of dbl_arrays for debugging
-    int Q = lbm->getQ();
-    uint32_t size = lbm->getDimX() * lbm->getDimY() * lbm->getDimZ();
-    float* dbl_arrays = lbm->getDblArrays();
-//    std::cout << "[Rank " << rank << "] DEBUG: dim_x=" << lbm->getDimX() << ", dim_y=" << lbm->getDimY() << ", dim_z=" << lbm->getDimZ() 
-//              << ", size=" << size << ", total_allocated=" << (Q+6)*size + LbmDQ::GUARD_SIZE 
-//              << ", density_offset=" << Q*size << ", speed_offset=" << (Q+5)*size << std::endl;
-    for (int i = (Q+6)*size - 5; i < (int)((Q+6)*size + LbmDQ::GUARD_SIZE); ++i) {
-//        std::cout << "[Rank " << rank << "] dbl_arrays[" << i << "] = " << dbl_arrays[i] << std::endl;
     }
 
     // Clean up    
