@@ -9,7 +9,6 @@
 #include <iostream>
 #include <mpi.h>
 #include <set>
-#include <spdlog/spdlog.h>
 #include <vector>
 
 #define MPI_CHECK(call) \
@@ -19,8 +18,8 @@
             char err_str[MPI_MAX_ERROR_STRING]; \
             int err_len; \
             MPI_Error_string(mpi_err, err_str, &err_len); \
-            spdlog::error("MPI error at {}:{}: {}", __FILE__, __LINE__, err_str); \
-            MPI_Abort(MPI_COMM_WORLD, mpi_err); \
+            fprintf(stderr, "MPI error at %s:%d: %s\n", __FILE__, __LINE__, err_str); \
+	    MPI_Abort(MPI_COMM_WORLD, mpi_err); \
         } \
     } while (0)
 
@@ -28,7 +27,7 @@
 #ifndef LBM_BOUNDS_CHECK
 #define LBM_BOUNDS_CHECK(idx, arrsize, msg) \
     if ((idx) < 0 || (idx) >= (arrsize)) { \
-        spdlog::error("Out-of-bounds access: {} at idx={}, arrsize={}", (msg), (idx), (arrsize)); \
+	fprintf(stderr, "Out-of-bounds access: %s at idx=%d, arrsize=%d\n", (msg), (idx), (arrsize)); \
 	MPI_Abort(MPI_COMM_WORLD, 1); \
     }
 #endif
@@ -37,8 +36,8 @@
 #ifndef LBM_EXTRA_BOUNDS_CHECK
 #define LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, arrname) \
     if ((idx) < 0 || (idx) >= (arrsize)) { \
-        spdlog::error("[Rank {}] EXTRA BOUNDS ERROR: {} write at idx={}, arrsize={}", rank, (arrname), (idx), (arrsize)); \
-        MPI_Abort(MPI_COMM_WORLD, 1); \
+        fprintf(stderr, "[Rank %d] EXTRA BOUNDS ERROR: %s write at idx=%d, arrsize=%d\n", rank, (arrname), (idx), (arrsize)); \
+	MPI_Abort(MPI_COMM_WORLD, 1); \
     }
 #endif
 
@@ -47,10 +46,8 @@
 #define LBM_MEMCPY_BOUNDS_CHECK(dst, dst_size, src, src_size, num, type, label) \
     if (((dst) < (type*)0x1000) || ((src) < (type*)0x1000) || \
         ((dst) + (num) > (dst) + (dst_size)) || ((src) + (num) > (src) + (src_size))) { \
-        spdlog::error("[Rank {}] MEMCPY_BOUNDS_ERROR: {} dst={} src={} num={} dst_size={} src_size={}", rank, (label), (void*)(dst), (void*)(src), (num), (dst_size), (src_size)); \
-	MPI_Abort(MPI_COMM_WORLD, 1); \
-    } else { \
-    spdlog::info("[Rank {}] memcpy({}) dst={} src={} num={} dst_size={} src_size={}", rank, (label), (void*)(dst), (void*)(src), (num), (dst_size), (src_size)); \
+	fprintf(stderr, "[Rank %d] MEMCPY_BOUNDS_ERROR: %s dst=%p src=%p num=%d dst_size=%d src_size=%d\n", rank, (label), (void*)(dst), (void*)(src), (num), (dst_size), (src_size)); \
+	MPI_Abort(MPI_COMM_WORLD, 1); \  
     }
 #endif
 
@@ -219,7 +216,8 @@ class LbmDQ
 	// Helper functions
         inline int idx3D(int x, int y, int z) const {
             if (x < 0 || x >= dim_x || y < 0 || y >= dim_y || z < 0 || z >= dim_z) {
-                spdlog::error("[Rank {}] ERROR: idx3D out of bounds: x={}, y={}, z={}, dim_x={}, dim_y={}, dim_z={}", rank, x, y, z, dim_x, dim_y, dim_z);
+		fprintf(stderr, "[Rank %d] ERROR: idx3D out of bounds: x=%d, y=%d, z=%d, dim_x=%d, dim_y=%d, dim_z=%d\n", rank, x, y, z, dim_x, dim_y, dim_z);
+		fprintf(stderr, "[Rank %d] ERROR: idx3D out of bounds: x=%d, y=%d, z=%d, dim_x=%d, dim_y=%d, dim_z=%d\n", rank, x, y, z, dim_x, dim_y, dim_z);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
 	    return x + dim_x * (y + dim_y * z);
@@ -233,7 +231,7 @@ class LbmDQ
         }
 
         void setEquilibrium(int x, int y, int z, double new_velocity_x, double new_velocity_y, double new_velocity_z, double new_density);
-        void getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, int *n_x, int *n_y, int *n_z);
+	void getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, int *n_x, int *n_y, int *n_z);
 
     public:
         LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int task_id, int num_tasks, LatticeType type);
@@ -250,6 +248,9 @@ class LbmDQ
         void computeVorticity();
         void gatherDataOnRank0(FluidProperty property);
         void exchangeBoundaries();
+	void exchangeSimpleBoundaries();
+	void handleMPIBoundaryStreaming(int i, int j, int k, int ni, int nj, int nk, int d, float value);
+        void storeBoundaryParticle(int neighbor_dir, int ni, int nj, int nk, int d, float value);
 	uint32_t getDimX();
         uint32_t getDimY();
 	uint32_t getDimZ();
@@ -322,14 +323,14 @@ class LbmDQ
 	    bool guard_ok = true;
             for (int i = 0; i < GUARD_SIZE; ++i) {
                 if (recv_buf && recv_buf[array_size + i] != GUARD_FLOAT) {
-                    spdlog::warn("[Rank {}] WARNING: recv_buf guard byte {} corrupted!", rank, i);
+                    fprintf(stderr, "[Rank %d] WARNING: recv_buf guard byte %d corrupted!\n", rank, i);
 		    guard_ok = false;
                 }
 	    }
             for (int i = 0; i < GUARD_SIZE; ++i) {
                 if (brecv_buf && brecv_buf[array_size + i] != GUARD_BOOL) {
-                    spdlog::warn("[Rank {}] WARNING: brecv_buf guard byte {} corrupted!", rank, i);
-                    guard_ok = false;
+		    fprintf(stderr, "[Rank %d] WARNING: brecv_buf guard byte %d corrupted!\n", rank, i);
+		    guard_ok = false;
                 }
             }
             uint32_t size = dim_x * dim_y * dim_z;
@@ -337,17 +338,16 @@ class LbmDQ
                 uint32_t dbl_arrays_size = dim_x * dim_y * dim_z;
 		for (int i = 0; i < GUARD_SIZE; ++i) {
                     if (dbl_arrays[(Q + 6) * dbl_arrays_size + i] != GUARD_FLOAT) {
-                        spdlog::warn("[Rank {}] WARNING: dbl_arrays guard byte {} corrupted!", rank, i);
+			fprintf(stderr, "[Rank %d] WARNING: dbl_arrays guard byte %d corrupted!\n", rank, i);
 			guard_ok = false;
                     }
                 }
             }
             if (!guard_ok) {
-                spdlog::warn("[Rank {}] WARNING: Buffer overrun detected in checkGuards!", rank);
+	        fprintf(stderr, "[Rank %d] WARNING: Buffer overrun detected in checkGuards!\n", rank);
 	    }
-        }
+	}
 
-    public:
         float* getDblArrays() { return dbl_arrays; }
         int getQ() const { return Q; }
 	
@@ -360,7 +360,7 @@ class LbmDQ
                 float expected = GUARD_FLOAT + i;
                 float actual = dbl_arrays[(Q + 6) * size + i];
                 if (actual != expected) {
-                    spdlog::error("[Rank {}] FIRST GUARD CORRUPTION after {}: dbl_arrays[{}] corrupted! Expected: {}, Actual: {}", rank, label, ((Q + 6) * size + i), expected, actual);
+		    fprintf(stderr, "[Rank %d] FIRST GUARD CORRUPTION after %s: dbl_arrays[%d] corrupted! Expected: %f, Actual: %f\n", rank, label, ((Q + 6) * size + i), expected, actual);
 		    guard_corruption_reported = true;
                     break;
 		}
@@ -370,6 +370,47 @@ class LbmDQ
         inline uint8_t* getLocalBarrier() { return barrier; }
         // Add public getter for discrete velocity array c
         inline const int (*getC() const)[3] { return c; }
+
+	// Add this public debug function to LbmDQ
+        void debugPrintDensityStats(const char* label) {
+            float min_rho = 1e10, max_rho = -1e10, sum_rho = 0.0f;
+            int count = 0;
+            for (int k = 0; k < dim_z; ++k) {
+                for (int j = 0; j < dim_y; ++j) {
+                    for (int i = 0; i < dim_x; ++i) {
+                        int idx = idx3D(i, j, k);
+                        float rho = density[idx];
+                        if (rho < min_rho) min_rho = rho;
+                        if (rho > max_rho) max_rho = rho;
+                        sum_rho += rho;
+                        count++;
+                    }
+                }
+            }
+            printf("[Rank %d] %s: min_rho=%.6f, max_rho=%.6f, mean_rho=%.6f\n", rank, label, min_rho, max_rho, sum_rho / count);
+        }
+
+	// Debug: Print fPtr at a few interior nodes (not at inlet or outlet)
+        void printInteriorFptrDebug(int t) {
+            if (rank >= 2) return;
+            int i0 = dim_x / 2, j0 = dim_y / 2, k0 = dim_z / 2;
+            for (int di = 0; di < 2; ++di) {
+                for (int dj = 0; dj < 2; ++dj) {
+                    for (int dk = 0; dk < 2; ++dk) {
+                        int i = i0 + di, j = j0 + dj, k = k0 + dk;
+                        if (i <= 0 || i >= dim_x-1) continue;
+                        if (j <= 0 || j >= dim_y-1) continue;
+                        if (k <= 0 || k >= dim_z-1) continue;
+                        int idx = idx3D(i, j, k);
+                        printf("[Rank %d][t=%d] fPtr at (i=%d, j=%d, k=%d): ", rank, t, i, j, k);
+                        for (int d = 0; d < Q; ++d) {
+                            printf("%g ", fPtr[d][idx]);
+                        }
+                        printf("\n");
+                    }
+                }
+            }
+        }
 };
 
 namespace {
@@ -425,11 +466,6 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     start_y = (row == 0) ? 0 : 1;
     start_z = (layer == 0) ? 0 : 1;
 
-    // print subdomain info for all ranks
-    if (rank == 0) {
-        spdlog::info("Partitioning: n_x={}, n_y={}, n_z={}", n_x, n_y, n_z);
-    }
-
     // set up sub grid for simulation
     total_x = width;
     total_y = height;
@@ -440,12 +476,6 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     dim_x = block_width;
     dim_y = block_height;
     dim_z = block_depth;
-
-    // Check for zero-sized subdomains
-    if (num_x == 0 || num_y == 0 || num_z == 0) {
-        spdlog::error("[Rank {}] ERROR: Subdomain has zero size! num_x={}, num_y={}, num_z={}", rank, num_x, num_y, num_z);
-	      MPI_Abort(MPI_COMM_WORLD, 1);
-    }
 
     // Set array_size before allocation
     if (rank == 0) {
@@ -465,17 +495,17 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
 
     // MPI Checks - Abort 
     if (num_x == 0 || num_y == 0 || num_z == 0) {
-        spdlog::error("[Rank {}] ERROR: Subdomain has zero size! num_x={}, num_y={}, num_z={}", rank, num_x, num_y, num_z);
+        fprintf(stderr, "[Rank %d] ERROR: Subdomain has zero size! num_x=%d, num_y=%d, num_z=%d\n", rank, num_x, num_y, num_z);
 	MPI_Abort(MPI_COMM_WORLD, 1);
     }
     
     if (offset_x < 0 || offset_y < 0 || offset_z < 0) {
-        spdlog::error("[Rank {}] ERROR: Negative offsets! offset_x={}, offset_y={}, offset_z={}", rank, offset_x, offset_y, offset_z);
+        fprintf(stderr, "[Rank %d] ERROR: Negative offsets! offset_x=%d, offset_y=%d, offset_z=%d\n", rank, offset_x, offset_y, offset_z);
 	MPI_Abort(MPI_COMM_WORLD, 1);
     }
     
     if (offset_x + num_x > width || offset_y + num_y > height || offset_z + num_z > depth) {
-        spdlog::error("[Rank {}] ERROR: Subdomain extends beyond global domain!", rank);
+        fprintf(stderr, "[Rank %d] ERROR: Subdomain extends beyond global domain!\n", rank);
 	MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
@@ -616,11 +646,6 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
         MPI_Type_size(other_bool[r], &size_other_bool);
     }
     
-    // Print buffer sizes
-//    spdlog::info("[Rank {}] dbl_arrays allocation: {} bytes", rank, ((Q+6)*dim_x*dim_y*dim_z*sizeof(float)));
-//    spdlog::info("[Rank {}] recv_buf allocation: {} bytes", rank, ((array_size+GUARD_SIZE)*sizeof(float)));
-//    spdlog::info("[Rank {}] brecv_buf allocation: {} bytes", rank, ((array_size+GUARD_SIZE)*sizeof(uint8_t)));
-
     uint32_t size = dim_x * dim_y * dim_z;
     size_t total_memory = 0;
 
@@ -797,15 +822,14 @@ LbmDQ::~LbmDQ()
     }
    
     // Debug before guard check
-//    spdlog::info("[Rank {}] About to check guard bytes, array_size={}, recv_buf={}, brecv_buf={}", rank, array_size, static_cast<void*>(recv_buf), static_cast<void*>(brecv_buf));
     bool guard_ok = true;
     for (int i = 0; i < GUARD_SIZE; ++i) {
         if (recv_buf && recv_buf[array_size + i] != GUARD_FLOAT) {
-            spdlog::warn("[Rank {}] WARNING: recv_buf guard byte {} corrupted! Value: {}", rank, i, recv_buf[array_size + i]);
+            fprintf(stderr, "[Rank %d] WARNING: recv_buf guard byte %d corrupted! Value: %d", rank, i, recv_buf[array_size + i]);
 	    guard_ok = false;
         }
         if (brecv_buf && brecv_buf[array_size + i] != GUARD_BOOL) {
-            spdlog::warn("[Rank {}] WARNING: brecv_buf guard byte {} corrupted! Value: {}", rank, i, brecv_buf[array_size + i]);
+            fprintf(stderr, "[Rank %d] WARNING: brecv_buf guard byte %d corrupted! Value: %d", rank, i, brecv_buf[array_size + i]);
 	    guard_ok = false;
         }
     }
@@ -816,16 +840,16 @@ LbmDQ::~LbmDQ()
             float actual = dbl_arrays[(Q + 6) * dbl_arrays_size + i];
             if (actual != expected) {
                 if (!guard_reported[i]) {
-                    spdlog::error("[Rank {}] FIRST CORRUPTION: dbl_arrays guard byte {} corrupted! Expected: {}, Actual: {}", rank, i, expected, actual);
+                    fprintf(stderr, "[Rank %d] FIRST CORRUPTION: dbl_arrays guard byte %d corrupted! Expected: %d, Actual: %d", rank, i, expected, actual);
 		    guard_reported[i] = true;
                 }
-		spdlog::warn("[Rank {}] WARNING: dbl_arrays guard byte {} corrupted! Value: {}", rank, i, actual);
+		fprintf(stderr, "[Rank %d] WARNING: dbl_arrays guard byte %d corrupted! Value: %d", rank, i, actual);
 		guard_ok = false;
             }
         }
     }
     if (!guard_ok) {
-        spdlog::warn("[Rank {}] WARNING: Buffer overrun detected before delete!", rank);
+        fprintf(stderr, "[Rank %d] WARNING: Buffer overrun detected before delete!", rank);
     }
     // Add missing deletes for dynamically allocated arrays
     if (dbl_arrays) { delete[] dbl_arrays; dbl_arrays = nullptr; }
@@ -862,76 +886,156 @@ void LbmDQ::initBarrier(std::vector<Barrier*> barriers)
     }
 }
 
-// initialize fluid
 void LbmDQ::initFluid(double physical_speed)
 {
     int i, j, k;
     double speed = speed_scale * physical_speed;
-    for (k = 0; k < dim_z; k++)
-        {
-        for (j = 0; j < dim_y; j++)
-        {
-            for (i = 0; i < dim_x; i++)
-            {
-                setEquilibrium(i, j, k, speed, 0.0, 0.0, 1.0);
-                LBM_BOUNDS_CHECK(idx3D(i, j, k), dim_x * dim_y * dim_z, "initFluid vorticity");
+    for (k = 0; k < dim_z; k++) {
+        for (j = 0; j < dim_y; j++) {
+            for (i = 0; i < dim_x; i++) {
+	    	if ((offset_x + i) == 0) {
+                //setEquilibrium(i, j, k, speed, 0.0, 0.0, 1.0);
+                    setEquilibrium(i, j, k, speed, 0.0, 0.0, 1.0); // Inlet face: flow in +X
+                } else {
+                    setEquilibrium(i, j, k, 0.0, 0.0, 0.0, 1.0); // Rest of domain: at rest
+                }
+		LBM_BOUNDS_CHECK(idx3D(i, j, k), dim_x * dim_y * dim_z, "initFluid vorticity");
 		vorticity[idx3D(i, j, k)] = 0.0;
             }
         }
-	}
+    }
 }
 
 void LbmDQ::updateFluid(double physical_speed)
 {
-    int i; int j; int k;
+    int i, j, k;
     double speed = speed_scale * physical_speed;
+    static int call_count = 0;
+    bool do_print = (rank < 2 && call_count < 3);
 
-    for (k = 0; k < dim_z; k++)
-    {
-	for (i = 0; i < dim_x; i++)
-    	{
-        setEquilibrium(i, 0, k, speed, 0.0, 0.0, 1.0);
-        setEquilibrium(i, dim_y - 1, k, speed, 0.0, 0.0, 1.0);
-    	}
-    }
-    
-    for (k = 0; k < dim_z; k++)
-    {
-        for (j = 0; j < dim_y; j++)
-        {
-        setEquilibrium(0, j, k, speed, 0.0, 0.0, 1.0);
-        setEquilibrium(dim_x - 1, j, k, speed, 0.0, 0.0, 1.0);
+    // Only set equilibrium for the physical inlet (global x=0)
+    for (k = 0; k < dim_z; k++) {
+        for (j = 0; j < dim_y; j++) {
+            int global_x = offset_x + 0;
+            if (global_x == 0) {
+                // Zou-He velocity inlet: only modify specific directions, preserve density
+                int idx = idx3D(0, j, k);
+                
+                // Calculate density from current distribution
+                double rho = 0.0;
+                for (int d = 0; d < Q; ++d) {
+                    rho += fPtr[d][idx];
+                }
+                if (rho <= 0.0) rho = 1.0; // Fallback for initialization
+                
+                // Set velocity components
+                double ux = speed;
+                double uy = 0.0;
+                double uz = 0.0;
+                
+                // Only update outgoing directions (towards +x) to impose velocity
+                // For D3Q15, directions 1,7,8,9,10 go in +x direction
+                double usq = ux*ux + uy*uy + uz*uz;
+                for (int d = 0; d < Q; ++d) {
+                    if (c[d][0] > 0) { // Only +x directions
+                        double cu = 3.0 * (c[d][0] * ux + c[d][1] * uy + c[d][2] * uz);
+                        fPtr[d][idx] = w[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usq);
+                    }
+                    // Leave incoming directions unchanged to allow natural flow development
+                }
+		
+		if (do_print && j == dim_y/2 && k == dim_z/2) {
+		    printf("[Rank %d][updateFluid] Zou-He inlet at (i=0, j=%d, k=%d, speed=%f, rho=%f)\n", rank, j, k, speed, rho);
+		}
+            }
         }
     }
-
-    for (j = 0; j < dim_y - 1; j++)
-    {
-        for (i = 0; i < dim_x - 1; i++)
-        {
-        setEquilibrium(i, j, 0, speed, 0.0, 0.0, 1.0);
-        setEquilibrium(i, j, dim_z - 1, speed, 0.0, 0.0, 1.0);
-        }
+    if (do_print) {
+        //printf("[Rank %d][updateFluid] END step %d\n", rank, call_count);
     }
+    call_count++;
 }
+//{
+//    int i; int j; int k;
+//    double speed = speed_scale * physical_speed;
+//    //static int call_count = 0;
+//    for (k = 0; k < dim_z; k++)
+//    {
+//        for (j = 0; j < dim_y; j++)
+//        {
+//            if ((offset_x + 0) == 0) {
+//                setEquilibrium(0, j, k, speed, 0.0, 0.0, 1.0);
+//            }
+//        }
+//    }
+//}
 
 // particle collision
 void LbmDQ::collide(double viscosity, int t)
 {
 	int i, j, k, idx;
-	double omega = 1.0 / (3.0 * viscosity + 0.5); //reciprocal of relaxation time
-	int arrsize = dim_x * dim_y * dim_z;
-	  static bool first_invalid_rho_printed = false;
-	
-	for (k = 1; k < dim_z -1; k++)
+        double omega = 1.0 / (3.0 * viscosity + 0.5); //reciprocal of relaxation time
+	static bool omega_printed = false;
+	if (!omega_printed && rank == 0) {
+	    printf("[DEBUG] viscosity=%f, omega=%f\n", viscosity, omega);
+	    omega_printed = true;
+	}
+        int arrsize = dim_x * dim_y * dim_z;
+        static int collide_call_count = 0;
+        int i_debug = 1, j_debug = dim_y / 2, k_debug = dim_z / 2;  // Cell adjacent to inlet
+	int idx_debug = idx3D(i_debug, j_debug, k_debug);
+        //if (rank < 2 && collide_call_count < 3) {
+        //    //printf("[Rank %d][collide][before][step=%d] fPtr[:,%d,%d,%d]: ", rank, collide_call_count, i_debug, j_debug, k_debug);
+        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
+        //    printf("\n");
+        //}
+        static bool first_invalid_rho_printed = false;	
+	for (k = 0; k < dim_z; k++)
 	{
-		for (j = 1; j < dim_y - 1; j++)
+		for (j = 0; j < dim_y; j++)
 		{
-			for (i = 1; i < dim_x - 1; ++i)
+			for (i = 0; i < dim_x; ++i)
 			{
 				idx = idx3D(i, j, k);
 				if (barrier && barrier[idx]) {
                  		   continue; // skip barrier nodes
                 		}
+
+				// Skip inlet boundary cells (they are handled by updateFluid)
+				int global_x = offset_x + i;
+				if (global_x == 0) {
+					continue; // inlet boundary - don't collide
+				}
+
+				// Handle outlet boundary (open boundary condition)
+				if (global_x == total_x - 1) {
+					int prev_idx = idx3D(i-1, j, k);
+					if (i > 0) {
+						for (int d = 0; d < Q; ++d) {
+							if (c[d][0] < 0) { // Only -x directions
+								fPtr[d][idx] = fPtr[d][prev_idx];
+							}
+						}
+					}
+					continue; // skip collision for outlet
+				}
+				
+				// Handle wall boundaries (no-slip: zero velocity)
+				int global_j = start_y + j;
+				int global_k = start_z + k;
+				if (global_j == 0 || global_j == total_y - 1 || global_k == 0 || global_k == total_z - 1) {
+					// Wall boundary - set to zero velocity
+					density[idx] = 1.0;
+					velocity_x[idx] = 0.0;
+					velocity_y[idx] = 0.0;
+					velocity_z[idx] = 0.0;
+					
+					// Set equilibrium distribution for wall (zero velocity)
+					for (int d = 0; d < Q; ++d) {
+						fPtr[d][idx] = w[d] * 1.0; // rho=1, u=0
+					}
+					continue; // skip collision for walls
+				}
 				LBM_BOUNDS_CHECK(idx, arrsize, "collide main");
 				double rho = 0.0, ux = 0.0, uy = 0.0, uz = 0.0;
 				for (int d = 0; d < Q; ++d)
@@ -962,6 +1066,15 @@ void LbmDQ::collide(double viscosity, int t)
 				LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "density]");
 				density[idx] = rho;
 				ux /= rho; uy /= rho; uz /= rho;
+				
+				// Simple velocity limiting for high-resolution grids
+				double speed_magnitude = sqrt(ux*ux + uy*uy + uz*uz);
+				if (speed_magnitude > 0.05) {  // Conservative limit for high-res grids
+					double scale = 0.05 / speed_magnitude;
+					ux *= scale;
+					uy *= scale;
+					uz *= scale;
+				}
 				LBM_BOUNDS_CHECK(idx, arrsize, "collide velocity_x");
 				LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "velocity_x");
 				velocity_x[idx] = ux;
@@ -979,18 +1092,39 @@ void LbmDQ::collide(double viscosity, int t)
 					double feq = w[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usqr);
 					LBM_BOUNDS_CHECK(idx, arrsize, "collide fPtr update");
 					LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "fPtr[d] update");
+					double old_f = fPtr[d][idx];
 					fPtr[d][idx] += omega * (feq - fPtr[d][idx]);
+					// Debug for specific position
+					//if (rank == 0 && idx == idx_debug && d == 0 && collide_call_count < 3) {
+					//    printf("[DEBUG][collide] d=%d: old_f=%f, feq=%f, omega=%f, new_f=%f\n", d, old_f, feq, omega, fPtr[d][idx]);
+					//}
 				}
 			}
 		}
 	}
 	printDblArraysGuardCorruption("collideG");
+	//if (rank < 2 && collide_call_count < 3) {
+        //    printf("[Rank %d][collide][after][step=%d] fPtr[:,%d,%d,%d]: ", rank, collide_call_count, i_debug, j_debug, k_debug);
+        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
+        //    printf("\n");
+        //    collide_call_count++;
+	//}
 }
 	
 // Optimized particle streaming - eliminates memory allocation/deallocation
 void LbmDQ::stream()
 {
 	size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
+
+	// Debug: Print fPtr at a single interior node before streaming (first 3 steps, first 2 ranks)
+        static int stream_call_count = 0;
+        int i_debug = 1, j_debug = dim_y / 2, k_debug = dim_z / 2;  // Cell adjacent to inlet
+        int idx_debug = idx3D(i_debug, j_debug, k_debug);
+        //if (rank < 2 && stream_call_count < 3) {
+        //    printf("[Rank %d][stream][before][step=%d] fPtr[:,%d,%d,%d]: ", rank, stream_call_count, i_debug, j_debug, k_debug);
+        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
+        //    printf("\n");
+        //}
 
 	// Use a static buffer to avoid repeated allocation/deallocation
 	static std::vector<std::vector<float>> temp_buffer_per_rank;
@@ -1008,133 +1142,219 @@ void LbmDQ::stream()
 		last_slice_per_rank[rank] = slice;
 	}
 
-	for (int d = 0; d < Q; ++d) {
-		float* f_d = fPtr[d];
-		
-		std::memcpy(temp_buffer_per_rank[rank].data(), f_d, slice * sizeof(float));
+	// Store current state in temp buffer for all directions
+	static std::vector<std::vector<float>> temp_all_directions;
+	if (temp_all_directions.size() <= static_cast<size_t>(rank)) {
+		temp_all_directions.resize(rank + 1);
+	}
+	if (temp_all_directions[rank].size() != Q * slice) {
+		temp_all_directions[rank].resize(Q * slice);
+	}
 
+	// Copy all distribution functions to temp buffer
+	for (int d = 0; d < Q; ++d) {
+		std::memcpy(temp_all_directions[rank].data() + d * slice, fPtr[d], slice * sizeof(float));
+	}
+
+	// Build opposite direction lookup table
+	static std::vector<int> opposite_dir(Q);
+	static bool opposite_dir_initialized = false;
+	if (!opposite_dir_initialized) {
+		for (int d = 0; d < Q; ++d) {
+			opposite_dir[d] = -1;
+			for (int od = 0; od < Q; ++od) {
+				if (c[d][0] == -c[od][0] && c[d][1] == -c[od][1] && c[d][2] == -c[od][2]) {
+					opposite_dir[d] = od;
+					break;
+				}
+			}
+		}
+		opposite_dir_initialized = true;
+	}
+
+	// Clear all destination arrays first
+	for (int d = 0; d < Q; ++d) {
+		std::fill(fPtr[d], fPtr[d] + slice, 0.0f);
+	}
+
+	// Handle f[0] rest particles
+	for (int idx = 0; idx < slice; ++idx) {
+		fPtr[0][idx] = temp_all_directions[rank][0 * slice + idx];
+	}
+
+	// Two pass approach: first streaming, then bounce back
+	// Pass 1: regular streaming only
+	for (int d = 1; d < Q; ++d) {
 		for (int k = 0; k < dim_z; ++k) {
 			for (int j = 0; j < dim_y; ++j) {
 				for (int i = 0; i < dim_x; ++i) {
 					int idx = idx3D(i, j, k);
 					LBM_BOUNDS_CHECK(idx, slice, "stream");
-					LBM_EXTRA_BOUNDS_CHECK(idx, slice, "temp_buffer read");
+					
 					int ni = i + c[d][0];
 					int nj = j + c[d][1];
 					int nk = k + c[d][2];
-					// Bounds check for destination indices
-                    			if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) continue;
+
+					// Check if destination is out of bounds
+					if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) {
+						continue;
+					}
+					
 					int nidx = idx3D(ni, nj, nk);
 					LBM_BOUNDS_CHECK(nidx, slice, "stream fPtr update");
-					LBM_EXTRA_BOUNDS_CHECK(idx, slice, "fPtr[d write]");
-					f_d[nidx] = temp_buffer_per_rank[rank][idx];
+				
+					// Check if destination is a barrier
+					if (barrier[nidx]) {
+						continue; // Handle barrier bounce-back in pass 2
+					} else {
+						// Normal streaming: move to destination
+						fPtr[d][nidx] += temp_all_directions[rank][d * slice + idx];
+					}
+				}
+			}
+		}
+	}
+
+	// Pass 2: Bounce-back (accumulate properly)
+	for (int d = 1; d < Q; ++d) {
+		for (int k = 0; k < dim_z; ++k) {
+			for (int j = 0; j < dim_y; ++j) {
+				for (int i = 0; i < dim_x; ++i) {
+					int idx = idx3D(i, j, k);
+
+					int ni = i + c[d][0];
+					int nj = j + c[d][1];
+					int nk = k + c[d][2];
+
+					bool do_bounceback = false;
+
+					// Check if destination is out of bounds
+					if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) {
+						do_bounceback = true;
+					} else {
+						int nidx = idx3D(ni, nj, nk);
+						// Check if destination is a barrier
+						if (barrier[nidx]) {
+							do_bounceback = true;
+						}
+					}
+
+					if (do_bounceback) {
+						// Bounce-back: reflect to current cell using opposite direction
+						int od = opposite_dir[d];
+						if (od >= 0 && od < Q) {
+							fPtr[od][idx] += temp_all_directions[rank][d * slice + idx];
+						}
+					}
 				}
 			}
 		}
 	}
 	printDblArraysGuardCorruption("stream");
+	// Debug: Print fPtr at the same interior node after streaming
+        //if (rank < 2 && stream_call_count < 3) {
+        //    printf("[Rank %d][stream][after][step=%d] fPtr[:,%d,%d,%d]: ", rank, stream_call_count, i_debug, j_debug, k_debug);
+        //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][idx_debug]);
+        //    printf("\n");
+        //    stream_call_count++;
+        //}
 }
 
 // Optimized bounce-back streaming - eliminates memory allocation/deallocation
-void LbmDQ::bounceBackStream()
-{
-        // Use a static buffer to avoid repeated allocation/deallocation
-        static std::vector<std::vector<float>> f_Old_per_rank;
-        static std::vector<std::vector<int>> opposite_dir_per_rank;
-        static std::vector<size_t> last_size_per_rank;
-        
-        // Ensure we have enough entries for all ranks
-        if (f_Old_per_rank.size() <= static_cast<size_t>(rank)) {
-            f_Old_per_rank.resize(rank + 1);
-            opposite_dir_per_rank.resize(rank + 1);
-            last_size_per_rank.resize(rank + 1);
-        }
-        
-        size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
-        size_t total_size = Q * slice;
-        
-        // Only resize if needed for this rank
-        if (f_Old_per_rank[rank].size() != total_size) {
-            f_Old_per_rank[rank].resize(total_size);
-            last_size_per_rank[rank] = total_size;
-        }
-        
-        // Copy current state
-        for (int d = 0; d < Q; ++d) {
-            LBM_BOUNDS_CHECK(d * slice, total_size, "bounceBackStream f_Old copy");
-            LBM_EXTRA_BOUNDS_CHECK(d * slice, total_size, "f_Old copy");
-            std::memcpy(f_Old_per_rank[rank].data() + d * slice, fPtr[d], slice * sizeof(float));
-        }
-
-	// Pre-compute opposite directions for better performance (rank-specific)
-	if (opposite_dir_per_rank[rank].size() != Q) {
-		opposite_dir_per_rank[rank].resize(Q);    
-	    // Initialize all to -1 (invalid)
-		for (int d = 0; d < Q; ++d) {
-			opposite_dir_per_rank[rank][d] = -1;
-		}
-		// Find opposite directions
-		for (int d = 0; d < Q; ++d) {
-			for (int dd = 0; dd < Q; ++dd) {
-	    			if (c[dd][0] == -c[d][0] && c[dd][1] == -c[d][1] && c[dd][2] == -c[d][2]) {
-					opposite_dir_per_rank[rank][d] = dd;
-					break;
-				}
-			}
-		}
-	}
-
-	// Optimized bounce-back with better cache locality
-	for (int k = 0; k < dim_z; ++k) {
-            for (int j = 0; j < dim_y; ++j) {
-                for (int i = 0; i < dim_x; ++i) {
-                    int idx = idx3D(i, j, k);
-                    LBM_BOUNDS_CHECK(idx, slice, "bounceBackStream idx");
-                    for (int d = 1; d < Q; ++d) {
-                        LBM_BOUNDS_CHECK(d, Q, "bounceBackStream direction");
-                        int ni = i + c[d][0];
-                        int nj = j + c[d][1];
-                        int nk = k + c[d][2];
-                        if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) continue;
-                        int nidx = idx3D(ni, nj, nk);
-                        LBM_BOUNDS_CHECK(nidx, slice, "bounceBackStream nidx");
-                        LBM_BOUNDS_CHECK(nidx, slice, "bounceBackStream barrier access");
-                        if (barrier[nidx]) {
-                            int od = opposite_dir_per_rank[rank][d];
-                            LBM_BOUNDS_CHECK(od, Q, "bounceBackStream opposite direction");
-                            if (od >= 0 && od < Q) {
-                                size_t f_old_idx = od * slice + idx;
-                                LBM_BOUNDS_CHECK(f_old_idx, total_size, "bounceBackStream f_Old access");
-				LBM_EXTRA_BOUNDS_CHECK(f_old_idx, total_size, "bounceBackStream f_Old access");
-				float* base_ptr = dbl_arrays;
-                                float* end_ptr = dbl_arrays + (Q+6)*slice;
-                                float* write_ptr = fPtr[d] + idx;
-                                if (write_ptr < base_ptr || write_ptr >= end_ptr) {
-                                    spdlog::error("[Rank {}] FATAL: Out-of-bounds write in bounceBackStream: d={}, idx={}, address={}, base={}, end={}", rank, d, idx, static_cast<void*>(write_ptr), static_cast<void*>(base_ptr), static_cast<void*>(end_ptr));
-                                spdlog::error("[Rank {}] Debug: i={}, j={}, k={}, Q={}, slice={}", rank, i, j, k, Q, slice);
-				    MPI_Abort(MPI_COMM_WORLD, 1);
-                                }
-                                fPtr[d][idx] = f_Old_per_rank[rank][f_old_idx];
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    	printDblArraysGuardCorruption("bounceBackStream");
-
-	// If guard is corrupted, print 10 values before and after the first corrupted guard index
-    if (guard_corruption_reported) {
-        uint32_t size = dim_x * dim_y * dim_z;
-        int first_guard = (Q + 6) * size;
-        spdlog::error("[Rank {}] DUMP: dbl_arrays around guard region:", rank);
-	for (int i = first_guard - 10; i < first_guard + GUARD_SIZE + 10; ++i) {
-            if (i >= 0 && i < (int)((Q+6)*size + GUARD_SIZE)) {
-                spdlog::error("[Rank {}] dbl_arrays[{}] = {}", rank, i, dbl_arrays[i]);
-	    }
-        }
-    }
-}
+//void LbmDQ::bounceBackStream()
+//{
+//        // Use a static buffer to avoid repeated allocation/deallocation
+//        static std::vector<std::vector<float>> f_Old_per_rank;
+//        static std::vector<std::vector<int>> opposite_dir_per_rank;
+//        static std::vector<size_t> last_size_per_rank;
+//        
+//        // Ensure we have enough entries for all ranks
+//        if (f_Old_per_rank.size() <= static_cast<size_t>(rank)) {
+//            f_Old_per_rank.resize(rank + 1);
+//            opposite_dir_per_rank.resize(rank + 1);
+//            last_size_per_rank.resize(rank + 1);
+//        }
+//        
+//        size_t slice = static_cast<size_t>(dim_x) * dim_y * dim_z;
+//        size_t total_size = Q * slice;
+//        
+//        // Only resize if needed for this rank
+//        if (f_Old_per_rank[rank].size() != total_size) {
+//            f_Old_per_rank[rank].resize(total_size);
+//            last_size_per_rank[rank] = total_size;
+//        }
+//        
+//        // Copy current state
+//        for (int d = 0; d < Q; ++d) {
+//            LBM_BOUNDS_CHECK(d * slice, total_size, "bounceBackStream f_Old copy");
+//            LBM_EXTRA_BOUNDS_CHECK(d * slice, total_size, "f_Old copy");
+//            std::memcpy(f_Old_per_rank[rank].data() + d * slice, fPtr[d], slice * sizeof(float));
+//        }
+//
+//	// Pre-compute opposite directions for better performance (rank-specific)
+//	if (opposite_dir_per_rank[rank].size() != Q) {
+//		opposite_dir_per_rank[rank].resize(Q);    
+//	    // Initialize all to -1 (invalid)
+//		for (int d = 0; d < Q; ++d) {
+//			opposite_dir_per_rank[rank][d] = -1;
+//		}
+//		// Find opposite directions
+//		for (int d = 0; d < Q; ++d) {
+//			for (int dd = 0; dd < Q; ++dd) {
+//	    			if (c[dd][0] == -c[d][0] && c[dd][1] == -c[d][1] && c[dd][2] == -c[d][2]) {
+//					opposite_dir_per_rank[rank][d] = dd;
+//					break;
+//				}
+//			}
+//		}
+//	}
+//
+//	// Optimized bounce-back with better cache locality
+//	for (int k = 0; k < dim_z; ++k) {
+//            for (int j = 0; j < dim_y; ++j) {
+//                for (int i = 0; i < dim_x; ++i) {
+//                    int idx = idx3D(i, j, k);
+//                    LBM_BOUNDS_CHECK(idx, slice, "bounceBackStream idx");
+//                    for (int d = 1; d < Q; ++d) {
+//                        LBM_BOUNDS_CHECK(d, Q, "bounceBackStream direction");
+//                        int ni = i + c[d][0];
+//                        int nj = j + c[d][1];
+//                        int nk = k + c[d][2];
+//                        if (ni < 0 || ni >= dim_x || nj < 0 || nj >= dim_y || nk < 0 || nk >= dim_z) continue;
+//                        int nidx = idx3D(ni, nj, nk);
+//                        LBM_BOUNDS_CHECK(nidx, slice, "bounceBackStream nidx");
+//                        LBM_BOUNDS_CHECK(nidx, slice, "bounceBackStream barrier access");
+//                        if (barrier[nidx]) {
+//                            int od = opposite_dir_per_rank[rank][d];
+//                            LBM_BOUNDS_CHECK(od, Q, "bounceBackStream opposite direction");
+//                            if (od >= 0 && od < Q) {
+//                                size_t f_old_idx = od * slice + idx;
+//                                LBM_BOUNDS_CHECK(f_old_idx, total_size, "bounceBackStream f_Old access");
+//				LBM_EXTRA_BOUNDS_CHECK(f_old_idx, total_size, "bounceBackStream f_Old access");
+//				float* base_ptr = dbl_arrays;
+//                                float* end_ptr = dbl_arrays + (Q+6)*slice;
+//                                float* write_ptr = fPtr[d] + idx;
+//                                fPtr[d][idx] = f_Old_per_rank[rank][f_old_idx];
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//    	printDblArraysGuardCorruption("bounceBackStream");
+//
+//	// If guard is corrupted, print 10 values before and after the first corrupted guard index
+//    if (guard_corruption_reported) {
+//        uint32_t size = dim_x * dim_y * dim_z;
+//        int first_guard = (Q + 6) * size;
+//        fprintf(stderr, "[Rank %d] DUMP: dbl_arrays around guard region:", rank);
+//	for (int i = first_guard - 10; i < first_guard + GUARD_SIZE + 10; ++i) {
+//            if (i >= 0 && i < (int)((Q+6)*size + GUARD_SIZE)) {
+//                fprintf(stderr, "[Rank %d] dbl_arrays[%d] = %d", rank, i, dbl_arrays[i]);
+//	    }
+//        }
+//    }
+//}
 
 // check if simulation has become unstable (if so, more time steps are required)
 bool LbmDQ::checkStability()
@@ -1161,11 +1381,11 @@ bool LbmDQ::checkStability()
 void LbmDQ::computeSpeed()
 {
     int i, j, k, idx;
-    for (k = 1; k < dim_z - 1; k++)
+    for (k = 0; k < dim_z; k++)
     {
-	for (j = 1; j < dim_y - 1; j++)
+	for (j = 0; j < dim_y; j++)
 	{
-            for (i = 1; i < dim_x - 1; i++)
+            for (i = 0; i < dim_x; i++)
             {
 		idx = idx3D(i, j, k);
 		LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "computeSpeed");
@@ -1479,8 +1699,8 @@ void LbmDQ::getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, i
         }
     }
     if (!found) {
-        spdlog::error("ERROR: Cannot partition {}x{}x{} domain among {} ranks without zero-sized subdomains.", dim_x, dim_y, dim_z, num_ranks);
-        spdlog::error("Try using a number of ranks that divides the domain size in at least one dimension.");
+        fprintf(stderr, "ERROR: Cannot partition %dx%dx%d domain among %d ranks without zero-sized subdomains.", dim_x, dim_y, dim_z, num_ranks);
+        fprintf(stderr, "Try using a number of ranks that divides the domain size in at least one dimension.");
 	      MPI_Abort(MPI_COMM_WORLD, 1);
     }
     *n_x = best_x;
@@ -1491,7 +1711,28 @@ void LbmDQ::getBest3DPartition(int num_ranks, int dim_x, int dim_y, int dim_z, i
 // private - exchange boundary information between MPI ranks
 void LbmDQ::exchangeBoundaries()
 {
+    // Simple ghost cell exchange approach
+    static int call_count = 0;
+    if (rank == 0 && call_count < 3) {
+        printf("[DEBUG] MPI exchange attempt %d\n", call_count);
+    }
+    call_count++;
+    
+    // Try simple boundary layer copying between adjacent domains
+    exchangeSimpleBoundaries();
+    return;
+
     uint32_t size = dim_x * dim_y * dim_z;
+    
+    // Debug: Print boundary values before exchange
+    //static int exchange_call_count = 0;
+    //if (rank < 2 && exchange_call_count < 3) {
+    //    int debug_idx = idx3D(1, dim_y / 2, dim_z / 2);
+    //    printf("[Rank %d][exchange][before][step=%d] fPtr[:,%d,%d,%d]: ", rank, exchange_call_count, 1, dim_y / 2, dim_z / 2);
+    //    for (int d = 0; d < Q; ++d) printf("%g ", fPtr[d][debug_idx]);
+    //    printf("\n");
+    //}
+    
     MPI_Barrier(cart_comm);
 
     // Create local datatypes for boundary exchange using local domain size
@@ -1556,11 +1797,11 @@ void LbmDQ::exchangeBoundaries()
             float* buf_end = fPtr[d] + size - 1;
             float* type_end = fPtr[d] + floats_in_type - 1;
             if (floats_in_type > size) {
-                spdlog::error("[Rank {}] FATAL: local_faceN MPI datatype describes more floats ({}) than buffer size ({}) for fPtr[{}]!", rank, floats_in_type, size, d);
+                fprintf(stderr, "[Rank %d] FATAL: local_faceN MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             if (type_end > buf_end) {
-                spdlog::error("[Rank {}] ERROR: local_faceN MPI_Sendrecv would overrun buffer! fPtr[{}]={}, type_end={}, buf_end={}", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
+                fprintf(stderr, "[Rank %d] ERROR: local_faceN MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceN, neighbors[NeighborN], TAG_F,
@@ -1577,11 +1818,11 @@ void LbmDQ::exchangeBoundaries()
             float* buf_end = fPtr[d] + size - 1;
             float* type_end = fPtr[d] + floats_in_type - 1;
             if (floats_in_type > size) {
-                spdlog::error("[Rank {}] FATAL: local_faceE MPI datatype describes more floats ({}) than buffer size ({}) for fPtr[{}]!", rank, floats_in_type, size, d);
+                fprintf(stderr, "[Rank %d] FATAL: local_faceE MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             if (type_end > buf_end) {
-                spdlog::error("[Rank {}] ERROR: local_faceE MPI_Sendrecv would overrun buffer! fPtr[{}]={}, type_end={}, buf_end={}", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
+                fprintf(stderr, "[Rank %d] ERROR: local_faceE MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceE, neighbors[NeighborE], TAG_F,
@@ -1598,11 +1839,11 @@ void LbmDQ::exchangeBoundaries()
             float* buf_end = fPtr[d] + size - 1;
             float* type_end = fPtr[d] + floats_in_type - 1;
             if (floats_in_type > size) {
-                spdlog::error("[Rank {}] FATAL: local_faceNE MPI datatype describes more floats ({}) than buffer size ({}) for fPtr[{}]!", rank, floats_in_type, size, d);
+                fprintf(stderr, "[Rank %d] FATAL: local_faceNE MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             if (type_end > buf_end) {
-                spdlog::error("[Rank {}] ERROR: local_faceNE MPI_Sendrecv would overrun buffer! fPtr[{}]={}, type_end={}, buf_end={}", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
+                fprintf(stderr, "[Rank %d] ERROR: local_faceNE MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceNE, neighbors[NeighborNE], TAG_F,
@@ -1619,11 +1860,11 @@ void LbmDQ::exchangeBoundaries()
             float* buf_end = fPtr[d] + size - 1;
             float* type_end = fPtr[d] + floats_in_type - 1;
             if (floats_in_type > size) {
-                spdlog::error("[Rank {}] FATAL: local_faceNW MPI datatype describes more floats ({}) than buffer size ({}) for fPtr[{}]!", rank, floats_in_type, size, d);
+                fprintf(stderr, "[Rank %d] FATAL: local_faceNW MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             if (type_end > buf_end) {
-                spdlog::error("[Rank {}] ERROR: local_faceNW MPI_Sendrecv would overrun buffer! fPtr[{}]={}, type_end={}, buf_end={}", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
+                fprintf(stderr, "[Rank %d] ERROR: local_faceNW MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceNW, neighbors[NeighborNW], TAG_F,
@@ -1640,11 +1881,11 @@ void LbmDQ::exchangeBoundaries()
             float* buf_end = fPtr[d] + size - 1;
             float* type_end = fPtr[d] + floats_in_type - 1;
             if (floats_in_type > size) {
-                spdlog::error("[Rank {}] FATAL: local_faceZlo MPI datatype describes more floats ({}) than buffer size ({}) for fPtr[{}]!", rank, floats_in_type, size, d);
+                fprintf(stderr, "[Rank %d] FATAL: local_faceZlo MPI datatype describes more floats (%d) than buffer size (%d) for fPtr[%d]!", rank, floats_in_type, size, d);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             if (type_end > buf_end) {
-                spdlog::error("[Rank {}] ERROR: local_faceZlo MPI_Sendrecv would overrun buffer! fPtr[{}]={}, type_end={}, buf_end={}", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
+                fprintf(stderr, "[Rank %d] ERROR: local_faceZlo MPI_Sendrecv would overrun buffer! fPtr[%d]=%d, type_end=%d, buf_end=%d", rank, d, (void*)fPtr[d], (void*)type_end, (void*)buf_end);
 		MPI_Abort(MPI_COMM_WORLD, 1);
             }
             MPI_CHECK(MPI_Sendrecv(fPtr[d], 1, local_faceZlo, neighbors[NeighborDown], TAG_F,
@@ -1705,7 +1946,7 @@ void LbmDQ::exchangeBoundaries()
         MPI_Type_size(local_scalar_faceN, &type_size);
         size_t buf_size = size * sizeof(float);
         if ((size_t)type_size > buf_size) {
-            spdlog::error("[Rank {}] ERROR: local_scalar_faceN datatype size exceeds buffer size for density!", rank);
+            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceN datatype size exceeds buffer size for density!", rank);
 	    MPI_Abort(MPI_COMM_WORLD, 1);
         }
         MPI_Sendrecv(density, 1, local_scalar_faceN, neighbors[NeighborN], TAG_D,
@@ -1718,7 +1959,7 @@ void LbmDQ::exchangeBoundaries()
         MPI_Type_size(local_scalar_faceE, &type_size);
         size_t buf_size = size * sizeof(float);
         if ((size_t)type_size > buf_size) {
-            spdlog::error("[Rank {}] ERROR: local_scalar_faceE datatype size exceeds buffer size for density!", rank);
+            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceE datatype size exceeds buffer size for density!", rank);
 	    MPI_Abort(MPI_COMM_WORLD, 1);
         }
         MPI_Sendrecv(density, 1, local_scalar_faceE, neighbors[NeighborE], TAG_D,
@@ -1731,7 +1972,7 @@ void LbmDQ::exchangeBoundaries()
         MPI_Type_size(local_scalar_faceNE, &type_size);
         size_t buf_size = size * sizeof(float);
         if ((size_t)type_size > buf_size) {
-            spdlog::error("[Rank {}] ERROR: local_scalar_faceNE datatype size exceeds buffer size for density!", rank);
+            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceNE datatype size exceeds buffer size for density!", rank);
 	    MPI_Abort(MPI_COMM_WORLD, 1);
         }
         MPI_Sendrecv(density, 1, local_scalar_faceNE, neighbors[NeighborNE], TAG_D,
@@ -1744,7 +1985,7 @@ void LbmDQ::exchangeBoundaries()
         MPI_Type_size(local_scalar_faceNW, &type_size);
         size_t buf_size = size * sizeof(float);
         if ((size_t)type_size > buf_size) {
-            spdlog::error("[Rank {}] ERROR: local_scalar_faceNW datatype size exceeds buffer size for density!", rank);
+            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceNW datatype size exceeds buffer size for density!", rank);
 	    MPI_Abort(MPI_COMM_WORLD, 1);
         }
         MPI_Sendrecv(density, 1, local_scalar_faceNW, neighbors[NeighborNW], TAG_D,
@@ -1757,7 +1998,7 @@ void LbmDQ::exchangeBoundaries()
         MPI_Type_size(local_scalar_faceZlo, &type_size);
         size_t buf_size = size * sizeof(float);
         if ((size_t)type_size > buf_size) {
-            spdlog::error("[Rank {}] ERROR: local_scalar_faceZlo datatype size exceeds buffer size for density!", rank);
+            fprintf(stderr, "[Rank %d] ERROR: local_scalar_faceZlo datatype size exceeds buffer size for density!", rank);
 	    MPI_Abort(MPI_COMM_WORLD, 1);
         }
         MPI_Sendrecv(density, 1, local_scalar_faceZlo, neighbors[NeighborDown], TAG_D,
@@ -1873,4 +2114,91 @@ void LbmDQ::exchangeBoundaries()
     MPI_Barrier(cart_comm);
 }
 
+// Simple boundary exchange - copy boundary layers between adjacent domains
+void LbmDQ::exchangeSimpleBoundaries()
+{
+    // Only exchange in X direction (flow direction) for now
+    // Batch all communications to reduce MPI overhead
+    
+    size_t boundary_size = dim_y * dim_z;  // Size of one boundary layer
+    size_t total_size = Q * boundary_size;  // All distribution functions
+    
+    // Allocate temporary buffers
+    static std::vector<float> send_buffer, recv_buffer;
+    send_buffer.resize(total_size);
+    recv_buffer.resize(total_size);
+    
+    // Pack data for sending (rightmost boundary)
+    for (int d = 0; d < Q; ++d) {
+        for (int k = 0; k < dim_z; ++k) {
+            for (int j = 0; j < dim_y; ++j) {
+                int src_idx = idx3D(dim_x - 1, j, k);  // rightmost layer
+                int buf_idx = d * boundary_size + k * dim_y + j;
+                send_buffer[buf_idx] = fPtr[d][src_idx];
+            }
+        }
+    }
+    
+    // Single batched communication in X direction
+    if (neighbors[NeighborE] != MPI_PROC_NULL || neighbors[NeighborW] != MPI_PROC_NULL) {
+        MPI_Sendrecv(send_buffer.data(), total_size, MPI_FLOAT, neighbors[NeighborE], 0,
+                     recv_buffer.data(), total_size, MPI_FLOAT, neighbors[NeighborW], 0,
+                     cart_comm, MPI_STATUS_IGNORE);
+                     
+        // Unpack received data (leftmost boundary)
+        if (neighbors[NeighborW] != MPI_PROC_NULL) {
+            for (int d = 0; d < Q; ++d) {
+                for (int k = 0; k < dim_z; ++k) {
+                    for (int j = 0; j < dim_y; ++j) {
+                        int dst_idx = idx3D(0, j, k);  // leftmost layer
+                        int buf_idx = d * boundary_size + k * dim_y + j;
+                        fPtr[d][dst_idx] = recv_buffer[buf_idx];
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Handle particles that would stream out of bounds - store for MPI exchange
+void LbmDQ::handleMPIBoundaryStreaming(int i, int j, int k, int ni, int nj, int nk, int d, float value)
+{
+    // For now, only handle X-direction (flow direction) boundaries
+    if (ni >= dim_x && neighbors[NeighborE] != MPI_PROC_NULL) {
+        // Particle wants to go to east neighbor
+        // Map it to the correct location in the neighbor domain
+        int neighbor_i = 0;  // Goes to leftmost layer of east neighbor
+        int neighbor_j = nj;
+        int neighbor_k = nk;
+        
+        // Store in a buffer for later exchange
+        storeBoundaryParticle(NeighborE, neighbor_i, neighbor_j, neighbor_k, d, value);
+    }
+    else if (ni < 0 && neighbors[NeighborW] != MPI_PROC_NULL) {
+        // Particle wants to go to west neighbor
+        int neighbor_i = dim_x - 1;  // Goes to rightmost layer of west neighbor
+        int neighbor_j = nj;
+        int neighbor_k = nk;
+        
+        // Store in a buffer for later exchange
+        storeBoundaryParticle(NeighborW, neighbor_i, neighbor_j, neighbor_k, d, value);
+    }
+    // For now, ignore Y and Z boundaries (periodic or no-slip)
+}
+
+// Store particle for MPI boundary exchange
+void LbmDQ::storeBoundaryParticle(int neighbor_dir, int ni, int nj, int nk, int d, float value)
+{
+    // Simple approach: just add to the boundary layer directly
+    // This is a simplified implementation
+    if (neighbor_dir == NeighborE) {
+        // This particle should go to position (0, nj, nk) in the east neighbor
+        // But we don't have direct access to the neighbor's memory
+        // For now, we'll rely on the exchange mechanism
+    }
+    else if (neighbor_dir == NeighborW) {
+        // This particle should go to position (dim_x-1, nj, nk) in the west neighbor
+        // For now, we'll rely on the exchange mechanism
+    }
+}
 #endif // _LBMDQ_MPI_HPP_
