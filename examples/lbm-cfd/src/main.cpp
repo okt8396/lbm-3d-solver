@@ -44,9 +44,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 30;
-    uint32_t dim_y = 30;
-    uint32_t dim_z = 30;
+    uint32_t dim_x = 100;
+    uint32_t dim_y = 40;
+    uint32_t dim_z = 40;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -140,7 +140,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
     // Grid-resolution dependent stability adjustment
     double stability_factor = 1.0;
-    if (dim_x >= 25) {
+    if (dim_x >= 150) {
         stability_factor = 0.5; // Reduce time step for higher resolution
         dt *= stability_factor;
         if (rank == 0) {
@@ -178,8 +178,8 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
     // create LBM object
     if (rank == 0) {
-        std::cout << "DEBUG: Creating LBM with dt/dx = " << (dt / dx) << std::endl;
-        std::cout << "DEBUG: Expected lattice speed = " << (physical_speed * dt / dx) << std::endl;
+        //std::cout << "DEBUG: Creating LBM with dt/dx = " << (dt / dx) << std::endl;
+        //std::cout << "DEBUG: Expected lattice speed = " << (physical_speed * dt / dx) << std::endl;
     }
     lbm = new LbmDQ(dim_x, dim_y, dim_z, dt / dx, rank, num_ranks, lattice_type);
 

@@ -969,7 +969,7 @@ void LbmDQ::updateFluid(double physical_speed)
                 }
 		
 		if (do_print && j == dim_y/2 && k == dim_z/2) {
-		    printf("[Rank %d][updateFluid] Zou-He inlet at (i=0, j=%d, k=%d, speed=%f, rho=%f)\n", rank, j, k, speed, rho);
+		    //printf("[Rank %d][updateFluid] Zou-He inlet at (i=0, j=%d, k=%d, speed=%f, rho=%f)\n", rank, j, k, speed, rho);
 		}
             }
         }
