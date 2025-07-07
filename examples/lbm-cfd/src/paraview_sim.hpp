@@ -7,51 +7,6 @@
 #include <iostream>
 class LbmDQ;
 
-void exportSimulationStateToFile(LbmDQ* lbm, const char* filename) {
-    float* gathered = lbm->getGatheredSpeed();
-    if (!gathered) {
-        fprintf(stderr, "Error: gathered array is NULL!\n");
-        return;
-    }
-    const char* scalar_name = "speed_m_per_s";
-    double value_scale = 1.0;
-    double physical_density = 1380.0;
-    double physical_length = 2.0;
-    double physical_time = 8.0;
-    int time_steps = 20000;
-    int dim_x = 10;
-    double dt = physical_time / time_steps;
-    double dx = physical_length / (double)dim_x;
-    double speed_scale = dx / dt;
-    if (std::string(scalar_name) == "speed_m_per_s") {
-        value_scale = 1.0;
-    } else if (std::string(scalar_name) == "density") {
-        value_scale = physical_density;
-    } else if (std::string(scalar_name) == "vorticity") {
-        value_scale = speed_scale / dx;
-    }
-    int total_x = lbm->getTotalDimX();
-    int total_y = lbm->getTotalDimY();
-    int total_z = lbm->getTotalDimZ();
-    FILE* fp = fopen(filename, "w");
-    if (!fp) {
-        fprintf(stderr, "Error: could not open %s for writing\n", filename);
-        return;
-    }
-    fprintf(fp, "# x y z %s\n", scalar_name);
-    for (int k = 0; k < total_z; ++k) {
-        for (int j = 0; j < total_y; ++j) {
-            for (int i = 0; i < total_x; ++i) {
-                int idx = i + total_x * (j + total_y * k);
-                float value = gathered[idx] * value_scale;
-                fprintf(fp, "%d %d %d %.6f\n", i, j, k, value);
-            }
-        }
-    }
-    fclose(fp);
-    printf("Export completed successfully\n");
-}
-
 void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename) {
     float* gathered = lbm->getGatheredSpeed();
     if (!gathered) {
@@ -64,12 +19,12 @@ void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename) {
     double physical_length = 2.0;
     double physical_time = 8.0;
     int time_steps = 20000;
-    int dim_x = 30;
+    int dim_x = 100;
     double dt = physical_time / time_steps;
     double dx = physical_length / (double)dim_x;
     double speed_scale = dx / dt;
-    printf("[DEBUG] VTK scaling: dx=%.6f, dt=%.6f, speed_scale=%.6f\n", dx, dt, speed_scale);
-    printf("[DEBUG] Expected conversion: 0.0015 lattice -> %.6f physical\n", 0.0015 * speed_scale);
+    //printf("[DEBUG] VTK scaling: dx=%.6f, dt=%.6f, speed_scale=%.6f\n", dx, dt, speed_scale);
+    //printf("[DEBUG] Expected conversion: 0.0015 lattice -> %.6f physical\n", 0.0015 * speed_scale);
     if (std::string(scalar_name) == "speed_m_per_s") {
         value_scale = speed_scale;
     } else if (std::string(scalar_name) == "density") {
@@ -178,40 +133,41 @@ inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm) {
     if (t % 100 == 0 && t <= 1000) {
         lbm->computeSpeed();
         lbm->gatherDataOnRank0(LbmDQ::Speed);
+        
         if (rank == 0) {
             char vtk_filename[128];
             snprintf(vtk_filename, sizeof(vtk_filename), "simulation_state_t%05d.vtk", t);
             exportSimulationStateToVTK(lbm, vtk_filename);
-            float* speed = lbm->getGatheredSpeed();
-            
-	    // Debug: Find maximum speed and its location
-            int total_points = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
-            float max_speed = 0.0f;
-            int max_idx = 0;
-            for (int i = 0; i < total_points; i++) {
-                if (speed[i] > max_speed) {
-                    max_speed = speed[i];
-                    max_idx = i;
-                }
-            }
-            int max_x = max_idx % lbm->getTotalDimX();
-            int max_y = (max_idx / lbm->getTotalDimX()) % lbm->getTotalDimY();
-            int max_z = max_idx / (lbm->getTotalDimX() * lbm->getTotalDimY());
-            printf("[t=%d] Max speed: %.6f at (%d,%d,%d) [lattice: %.6f]\n",
-                   t, max_speed, max_x, max_y, max_z, max_speed/166.75);
+            float* density = lbm->getGatheredDensity();
+
+	    //// Debug: Find maximum speed and its location
+            //int total_points = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
+            //float max_speed = 0.0f;
+            //int max_idx = 0;
+            //for (int i = 0; i < total_points; i++) {
+            //    if (speed[i] > max_speed) {
+            //        max_speed = speed[i];
+            //        max_idx = i;
+            //    }
+            //}
+            //int max_x = max_idx % lbm->getTotalDimX();
+            //int max_y = (max_idx / lbm->getTotalDimX()) % lbm->getTotalDimY();
+            //int max_z = max_idx / (lbm->getTotalDimX() * lbm->getTotalDimY());
+            //printf("[t=%d] Max speed: %.6f at (%d,%d,%d) [lattice: %.6f]\n",
+            //       t, max_speed, max_x, max_y, max_z, max_speed/166.75);
 
 	    //printVTKDebugInfo(t, lbm, speed);
         }
     }
-    if (t % 100 == 0 && t <= 1000) {
-        lbm->computeSpeed();
-        lbm->gatherDataOnRank0(LbmDQ::Speed);
-        if (rank == 0) {
-            float* speed = lbm->getGatheredSpeed();
-            printMeanSpeeds(t, lbm, speed);
-            //printSpeedProfileX(t, lbm, speed);
-        }
-    }
+    //if (t % 100 == 0 && t <= 1000) {
+    //    lbm->computeSpeed();
+    //    lbm->gatherDataOnRank0(LbmDQ::Speed);
+    //    if (rank == 0) {
+    //        float* speed = lbm->getGatheredSpeed();
+    //        printMeanSpeeds(t, lbm, speed);
+    //        //printSpeedProfileX(t, lbm, speed);
+    //    }
+    //}
 }
 
 #endif // PARAVIEW_SIM_HPP 
