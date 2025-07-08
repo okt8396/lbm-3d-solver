@@ -17,9 +17,9 @@ void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename) {
     double value_scale = 1.0;
     double physical_density = 1380.0;
     double physical_length = 2.0;
-    double physical_time = 8.0;
-    int time_steps = 20000;
-    int dim_x = 100;
+    double physical_time = 56.0;
+    int time_steps = 5000;
+    int dim_x = 50;
     double dt = physical_time / time_steps;
     double dx = physical_length / (double)dim_x;
     double speed_scale = dx / dt;
@@ -130,7 +130,7 @@ inline void printSpeedProfileX(int t, LbmDQ* lbm, float* speed) {
 }
 
 inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm) {
-    if (t % 100 == 0 && t <= 1000) {
+    if (t % 50 == 0 && t <= 1000) {
         lbm->computeSpeed();
         lbm->gatherDataOnRank0(LbmDQ::Speed);
         
@@ -159,15 +159,15 @@ inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm) {
 	    //printVTKDebugInfo(t, lbm, speed);
         }
     }
-    //if (t % 100 == 0 && t <= 1000) {
-    //    lbm->computeSpeed();
-    //    lbm->gatherDataOnRank0(LbmDQ::Speed);
-    //    if (rank == 0) {
-    //        float* speed = lbm->getGatheredSpeed();
-    //        printMeanSpeeds(t, lbm, speed);
-    //        //printSpeedProfileX(t, lbm, speed);
-    //    }
-    //}
+    if (t % 1000 == 0 && t <= 10000) {
+        lbm->computeSpeed();
+        lbm->gatherDataOnRank0(LbmDQ::Speed);
+        if (rank == 0) {
+            float* speed = lbm->getGatheredSpeed();
+            printMeanSpeeds(t, lbm, speed);
+            //printSpeedProfileX(t, lbm, speed);
+        }
+    }
 }
 
 #endif // PARAVIEW_SIM_HPP 
