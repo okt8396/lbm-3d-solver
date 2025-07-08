@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -44,10 +45,10 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 100;
-    uint32_t dim_y = 40;
-    uint32_t dim_z = 40;
-    uint32_t time_steps = 20000;
+    uint32_t dim_x = 50;
+    uint32_t dim_y = 50;
+    uint32_t dim_z = 50;
+    uint32_t time_steps = 5000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
 
@@ -131,23 +132,39 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     double physical_length = 2.0;         // m
     double physical_viscosity = 1.3806;   // Pa s
     double physical_time = 8.0;           // s
-    double physical_freq = 0.25;//0.04;          // s
+    double physical_freq = 2.0;          // s
     double reynolds_number = (physical_density * physical_speed * physical_length) / physical_viscosity;
 
     // convert physical properties into simulation properties
-    double dt = physical_time / time_steps;
     double dx = physical_length / (double)dim_x;
 
-    // Grid-resolution dependent stability adjustment
+    // Calculate time step based on CFL condition and lattice physics
+    double lattice_cs = 1.0 / sqrt(3.0);  // Lattice speed of sound
+    double max_velocity = physical_speed;
+    double cfl_factor = 0.1;  // Conservative CFL number
+
+    // Base time step from CFL condition
+    double dt_cfl = cfl_factor * dx / max_velocity;
+
+    // Additional stability factor for high resolution
     double stability_factor = 1.0;
-    if (dim_x >= 150) {
+    if (dim_x >= 100) {
         stability_factor = 0.5; // Reduce time step for higher resolution
-        dt *= stability_factor;
-        if (rank == 0) {
-            printf("[INFO] High-resolution stability adjustment: dt reduced by factor %.2f\n", stability_factor);
-        }
+    } else if (dim_x >= 50) {
+        stability_factor = 0.7;
     }
-    double lattice_viscosity = physical_viscosity * dt / (dx * dx);
+
+    double dt = dt_cfl * stability_factor;
+
+    if (rank == 0) {
+        printf("[INFO] CFL-based time step calculation:\n");
+        printf("  dx = %.6f m\n", dx);
+        printf("  dt_cfl = %.6f s\n", dt_cfl);
+        printf("  stability_factor = %.2f\n", stability_factor);
+        printf("  final dt = %.6f s\n", dt);
+    }
+    double kinematic_viscosity = physical_viscosity / physical_density;
+    double lattice_viscosity = kinematic_viscosity * dt / (dx * dx);
     double lattice_speed = physical_speed * dt / dx;
     double simulated_time = time_steps * dt;
 
@@ -164,8 +181,11 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	std::cout << "  dx:        " << dx << " m" << std::endl;
         std::cout << "  dt:        " << dt << " s" << std::endl;
         std::cout << "  Reynolds number:   " << reynolds_number << std::endl;
+	std::cout << "  kinematic viscosity: " << kinematic_viscosity << " m^2/s" << std::endl;
         std::cout << "  lattice viscosity: " << lattice_viscosity << std::endl;
 	std::cout << "  lattice speed:     " << lattice_speed << std::endl;
+	std::cout << "  CFL number:        " << cfl_factor << std::endl;
+        std::cout << "  simulated time:    " << simulated_time << " s" << std::endl;
 
     // stability checks
     if (lattice_viscosity < 0.005) {
@@ -191,10 +211,70 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
     //barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
     //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
+   
+    // TRANSIENT-EXTENDING BARRIERS: Multiple cylinders for complex wake interactions
+    barriers.clear();
     
-    // NEW barriers (central sphere)
+    // Add multiple cylindrical obstacles to create extended transient behavior
+    int cylinder_radius = 3; // Radius for cylindrical obstacles
+    
+    // First cylinder at 1/4 length
+    double cx1 = dim_x / 4.0;
+    double cy1 = dim_y / 2.0;
+    
+    // Second cylinder at 1/2 length, offset vertically
+    double cx2 = dim_x / 2.0;
+    double cy2 = dim_y / 3.0;
+    
+    // Third cylinder at 3/4 length
+    double cx3 = 3.0 * dim_x / 4.0;
+    double cy3 = 2.0 * dim_y / 3.0;
+    
+    // Create cylindrical obstacles (spanning full z-direction)
+    int cylinder1_count = 0, cylinder2_count = 0, cylinder3_count = 0;
+    for (int k = 0; k < (int)dim_z; ++k) {
+        for (int j = 0; j < (int)dim_y; ++j) {
+            for (int i = 0; i < (int)dim_x; ++i) {
+                // Cylinder 1
+                double dx1 = i - cx1;
+                double dy1 = j - cy1;
+                if (dx1*dx1 + dy1*dy1 <= cylinder_radius*cylinder_radius) {
+                    barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+        	    cylinder1_count++;
+                }
+                
+                // Cylinder 2
+                double dx2 = i - cx2;
+                double dy2 = j - cy2;
+                if (dx2*dx2 + dy2*dy2 <= cylinder_radius*cylinder_radius) {
+                    barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+        	    cylinder2_count++;
+                }
+                
+                // Cylinder 3
+                double dx3 = i - cx3;
+                double dy3 = j - cy3;
+                if (dx3*dx3 + dy3*dy3 <= cylinder_radius*cylinder_radius) {
+                    barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+        	    cylinder3_count++;
+                }
+            }
+        }
+    }
+
+    if (rank == 0) {
+        printf("[INFO] Added %d cylindrical obstacles for extended transient behavior\n", 3);
+        printf("  Cylinder 1: x=%.1f, y=%.1f, r=%d (%d points)\n", cx1, cy1, cylinder_radius, cylinder1_count);
+        printf("  Cylinder 2: x=%.1f, y=%.1f, r=%d (%d points)\n", cx2, cy2, cylinder_radius, cylinder2_count);
+        printf("  Cylinder 3: x=%.1f, y=%.1f, r=%d (%d points)\n", cx3, cy3, cylinder_radius, cylinder3_count);
+        printf("  Total barriers created: %d\n", (int)barriers.size());
+        printf("  Domain size: %dx%dx%d\n", (int)dim_x, (int)dim_y, (int)dim_z);
+        printf("  Expected cylinder volume: ~%.1f grid points each\n", 3.14159 * cylinder_radius * cylinder_radius * dim_z);
+    }
+
+    //// NEW barriers (central sphere)
     //barriers.clear();
-    // Add a central sphere barrier
+    //// Add a central sphere barrier
     //double cx = (dim_x - 1) / 2.0;
     //double cy = (dim_y - 1) / 2.0;
     //double cz = (dim_z - 1) / 2.0;
@@ -246,7 +326,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
             if (rank == 0)
             {
                 std::cout << std::fixed << std::setprecision(3) << "LBM-CFD> time: " << time << " / " <<
-                             physical_time << " , time step: " << t << " / " << time_steps << std::endl;
+                             simulated_time << " , time step: " << t << " / " << time_steps << std::endl;
             }
             stable = lbm->checkStability();
             MPI_Reduce(&stable, &all_stable, 1, MPI_UNSIGNED_CHAR, MPI_MAX, 0, MPI_COMM_WORLD);
