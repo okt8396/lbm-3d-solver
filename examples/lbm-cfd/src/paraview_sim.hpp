@@ -5,9 +5,10 @@
 #include <cstdio>
 #include <string>
 #include <iostream>
+
 class LbmDQ;
 
-void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename) {
+void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename, double dt, double dx, double physical_density, uint32_t time_steps) {
     float* gathered = lbm->getGatheredSpeed();
     if (!gathered) {
         fprintf(stderr, "Error: gathered array is NULL!\n");
@@ -15,13 +16,6 @@ void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename) {
     }
     const char* scalar_name = "speed_m_per_s";
     double value_scale = 1.0;
-    double physical_density = 1380.0;
-    double physical_length = 2.0;
-    double physical_time = 56.0;
-    int time_steps = 5000;
-    int dim_x = 50;
-    double dt = physical_time / time_steps;
-    double dx = physical_length / (double)dim_x;
     double speed_scale = dx / dt;
     //printf("[DEBUG] VTK scaling: dx=%.6f, dt=%.6f, speed_scale=%.6f\n", dx, dt, speed_scale);
     //printf("[DEBUG] Expected conversion: 0.0015 lattice -> %.6f physical\n", 0.0015 * speed_scale);
@@ -129,7 +123,7 @@ inline void printSpeedProfileX(int t, LbmDQ* lbm, float* speed) {
     }
 }
 
-inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm) {
+inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps) {
     if (t % 50 == 0 && t <= 1000) {
         lbm->computeSpeed();
         lbm->gatherDataOnRank0(LbmDQ::Speed);
@@ -137,8 +131,8 @@ inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm) {
         if (rank == 0) {
             char vtk_filename[128];
             snprintf(vtk_filename, sizeof(vtk_filename), "simulation_state_t%05d.vtk", t);
-            exportSimulationStateToVTK(lbm, vtk_filename);
-            float* density = lbm->getGatheredDensity();
+            exportSimulationStateToVTK(lbm, vtk_filename, dt, dx, physical_density, time_steps);
+            float* speed = lbm->getGatheredSpeed();
 
 	    //// Debug: Find maximum speed and its location
             //int total_points = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();

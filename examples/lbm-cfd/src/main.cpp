@@ -19,7 +19,7 @@
 void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr, LbmDQ::LatticeType lattice_type);
 void createDivergingColorMap(uint8_t *cmap, uint32_t size);
 //void exportSimulationStateToFile(LbmDQ* lbm, const char* filename);
-void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename);
+void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename, double dt, double dx, double physical_density, uint32_t time_steps);
 
 #ifdef ASCENT_ENABLED
 void updateAscentData(int rank, int num_ranks, int step, double time, conduit::Node &mesh);
@@ -48,7 +48,7 @@ int main(int argc, char **argv) {
     uint32_t dim_x = 50;
     uint32_t dim_y = 50;
     uint32_t dim_z = 50;
-    uint32_t time_steps = 5000;
+    uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
 
@@ -346,7 +346,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         }
 
 	// Diagnostics and VTK/printouts every 1000/5000 steps
-        printSimulationDiagnostics(t, rank, lbm);
+        printSimulationDiagnostics(t, rank, lbm, dt, dx, physical_density, time_steps);
 
 	// Time the entire iteration
         start_time = std::chrono::high_resolution_clock::now();
