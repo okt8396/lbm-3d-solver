@@ -44,9 +44,9 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 50;
-    uint32_t dim_y = 50;
-    uint32_t dim_z = 50;
+    uint32_t dim_x = 150;
+    uint32_t dim_y = 75;
+    uint32_t dim_z = 75;
     uint32_t time_steps = 20000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -130,127 +130,89 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     double physical_speed = 0.25;         // m/s
     double physical_length = 2.0;         // m
     double physical_viscosity = 1.3806;   // Pa s
-    double physical_time = 8.0;           // s
-    double physical_freq = 0.25;          // s
+    double kinematic_viscosity = physical_viscosity / physical_density;
     double reynolds_number = (physical_density * physical_speed * physical_length) / physical_viscosity;
 
-    // convert physical properties into simulation properties
     double dx = physical_length / (double)dim_x;
 
-    // Calculate time step based on CFL condition and lattice physics
+    // Calculate time step based on CFL condition
+    double cfl_max = 0.3;  // Conservative CFL number
+    double dt_cfl = cfl_max * dx / physical_speed;
+
+    // Calculate diffusion stability limit
+    double dt_diffusion = 0.5 * dx * dx / kinematic_viscosity;
+
+    // Use the more restrictive (smaller) time step
+    double dt = std::min(dt_cfl, dt_diffusion);
+
+    // Calculate lattice parameters
     double lattice_cs = 1.0 / sqrt(3.0);  // Lattice speed of sound
-    double max_velocity = physical_speed;
-
-    // TRANSIENT-OPTIMIZED CFL: Use larger time steps to extend transient behavior
-    double cfl_factor = 0.4;  // was 0.1
-
-    // Base time step from CFL condition
-    double dt_cfl = cfl_factor * dx / max_velocity;
-    
-    // Calculate diffusion-limited time step (often more restrictive than CFL)
-    double kinematic_viscosity = physical_viscosity / physical_density;
-    double dt_diffusion = 0.5 * dx * dx / kinematic_viscosity;  // Diffusion stability limit
-
-    // Use the smaller of CFL and diffusion limits
-    double dt_base = std::min(dt_cfl, dt_diffusion);
-
-    // TRANSIENT-EXTENDING FACTOR: Increase time step for extended transient behavior
-    double transient_factor = 1.2;  // Slightly push stability limits for longer transients
-    if (dim_x >= 100) {
-	transient_factor = 1.0; // Be more conservative for very high resolution
-    }
-    
-    double dt = dt_base * transient_factor;
-
-    if (rank == 0) {
-        printf("[INFO] TRANSIENT-OPTIMIZED time step calculation:\n");
-        printf("  dx = %.6f m\n", dx);
-        printf("  dt_cfl = %.6f s (CFL=%.2f)\n", dt_cfl, cfl_factor);
-        printf("  dt_diffusion = %.6f s\n", dt_diffusion);
-        printf("  dt_base = %.6f s (limiting factor: %s)\n", dt_base, (dt_base == dt_cfl) ? "CFL" : "diffusion");
-        printf("  transient_factor = %.2f\n", transient_factor);
-	printf("  final dt = %.6f s\n", dt);
-    }
-    
-    // Calculate lattice parameters with the optimized time step
     double lattice_viscosity = kinematic_viscosity * dt / (dx * dx);
     double lattice_speed = physical_speed * dt / dx;
     double mach_number = lattice_speed / lattice_cs;
-    double actual_simulated_time = time_steps * dt;
 
-    // Create a clean display time scale (always 8 seconds regardless of domain size)
-    double display_simulated_time = 8.0; 
-    double display_dt = display_simulated_time / time_steps;  // Display time per step
-
-    // Final stability check - adjust if needed for extended transient behavior
-    if (lattice_viscosity < 0.003) {
-        // If viscosity too low, reduce dt slightly but keep transient-friendly
-        double correction = 0.003 / lattice_viscosity;
+    // Safety checks and corrections
+    if (lattice_viscosity < 0.005) {
+        double correction = 0.005 / lattice_viscosity;    
         dt *= correction;
         lattice_viscosity = kinematic_viscosity * dt / (dx * dx);
         lattice_speed = physical_speed * dt / dx;
         mach_number = lattice_speed / lattice_cs;
-        actual_simulated_time = time_steps * dt;
         if (rank == 0) {
-            printf("[INFO] Adjusted dt by factor %.3f for viscosity stability\n", correction);
+            printf("[INFO] Reduced dt by factor %.3f for viscosity stability\n", correction);
         }
     }
 
-    if (mach_number > 0.15) {
-        // If Mach number too high, reduce dt but keep transient-friendly
-        double correction = 0.15 / mach_number;
+    if (mach_number > 0.1) {
+        double correction = 0.1 / mach_number;
         dt *= correction;
         lattice_viscosity = kinematic_viscosity * dt / (dx * dx);
         lattice_speed = physical_speed * dt / dx;
         mach_number = lattice_speed / lattice_cs;
-        actual_simulated_time = time_steps * dt;
         if (rank == 0) {
-            printf("[INFO] Adjusted dt by factor %.3f for Mach number stability\n", correction);
+            printf("[INFO] Reduced dt by factor %.3f for Mach number stability\n", correction);
         }
     }
 
-    // output simulation properties
+    // Calculate total simulated time
+    double total_simulated_time = time_steps * dt;
+
+    // Output simulation properties
     if (rank == 0)
     {
         std::cout << std::fixed << std::setprecision(6);
+        std::cout << "LBM-CFD> TIME STEP CALCULATION:" << std::endl;
+        std::cout << "  Grid spacing (dx): " << dx << " m" << std::endl;
+        std::cout << "  CFL time step: " << dt_cfl << " s" << std::endl;
+        std::cout << "  Diffusion time step: " << dt_diffusion << " s" << std::endl;
+        std::cout << "  Final time step (dt): " << dt << " s" << std::endl;
+        std::cout << "  Limiting factor: " << ((dt_cfl < dt_diffusion) ? "CFL" : "Diffusion") << std::endl;
+        
         std::cout << "LBM-CFD> PHYSICAL PARAMETERS:" << std::endl;
-        std::cout << "  density:   " << physical_density << " kg/m^3" << std::endl;
+        std::cout << "  density: " << physical_density << " kg/m^3" << std::endl;
         std::cout << "  viscosity: " << physical_viscosity << " Pa s" << std::endl;
-        std::cout << "  speed:     " << physical_speed << " m/s" << std::endl;
-        std::cout << "  length:    " << physical_length << " m" << std::endl;
-        std::cout << "  time:      " << physical_time << " s" << std::endl;
-	std::cout << "  dx:        " << dx << " m" << std::endl;
-        std::cout << "  dt:        " << dt << " s" << std::endl;
-        std::cout << "  Reynolds number:   " << reynolds_number << std::endl;
-	std::cout << "  kinematic viscosity: " << kinematic_viscosity << " m^2/s" << std::endl;
+        std::cout << "  speed: " << physical_speed << " m/s" << std::endl;
+        std::cout << "  length: " << physical_length << " m" << std::endl;
+        std::cout << "  Reynolds number: " << reynolds_number << std::endl;
+        std::cout << "  kinematic viscosity: " << kinematic_viscosity << " m^2/s" << std::endl;
+        
+        std::cout << "LBM-CFD> LATTICE PARAMETERS:" << std::endl;
+        std::cout << "  lattice speed: " << lattice_speed << std::endl;
         std::cout << "  lattice viscosity: " << lattice_viscosity << std::endl;
-	std::cout << "  lattice speed:     " << lattice_speed << std::endl;
-	std::cout << "  Mach number:       " << mach_number << std::endl;
-	std::cout << "  CFL number:        " << cfl_factor << std::endl;
-	std::cout << "  actual simulated time: " << actual_simulated_time << " s (physics)" << std::endl;
-        std::cout << "LBM-CFD> DISPLAY TIMING (for clean output):" << std::endl;
-        std::cout << "  Display simulated time: " << display_simulated_time << " s" << std::endl;
-        std::cout << "  Display time per step:  " << std::fixed << std::setprecision(6) << display_dt << " s" << std::endl;
-        std::cout << "  Output frequency:       " << physical_freq << " s" << std::endl;
-        std::cout << "  Expected outputs:       " << (int)(display_simulated_time / physical_freq) + 1 << std::endl;
-
-    // TRANSIENT-OPTIMIZED stability checks (more aggressive limits for extended behavior)
-    if (lattice_viscosity < 0.003) {
-        std::cout << "*** WARNING: lattice_viscosity < 0.003! Sim may be unstable\n";	    
-    }
-    if (mach_number > 0.15) {
-	std::cout << "*** WARNING: Mach number > 0.15! Sim may be unstable\n";
-    }
-    if (lattice_speed > 0.15) {
-	std::cout << "*** WARNING: lattice_speed > 0.15! Sim may be unstable\n";
-    }
-    
-    // Transient behavior diagnostic
-    std::cout << "LBM-CFD> TRANSIENT BEHAVIOR ANALYSIS:" << std::endl;
-    std::cout << "  Convective time scale: " << (physical_length / physical_speed) << " s" << std::endl;
-    std::cout << "  Diffusive time scale:  " << (physical_length * physical_length / kinematic_viscosity) << " s" << std::endl;
-    std::cout << "  Ratio (convective/diffusive): " << (kinematic_viscosity / (physical_length * physical_speed)) << std::endl;
-    std::cout << "  Expected transient duration: " << std::max(physical_length / physical_speed, physical_length * physical_length / kinematic_viscosity) << " s" << std::endl;
+        std::cout << "  Mach number: " << mach_number << std::endl;
+        std::cout << "  CFL number: " << cfl_max << std::endl;
+        std::cout << "  Total simulated time: " << total_simulated_time << " s" << std::endl;
+        
+        // Stability warnings
+        if (lattice_viscosity < 0.005) {
+            std::cout << "*** WARNING: Low lattice viscosity! Simulation may be unstable\n";
+        }
+        if (mach_number > 0.1) {
+            std::cout << "*** WARNING: High Mach number! Simulation may be unstable\n";
+        }
+        if (lattice_speed > 0.1) {
+            std::cout << "*** WARNING: High lattice speed! Simulation may be unstable\n";
+        }
     }
 
     // create LBM object
@@ -359,6 +321,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     int t;
     double time;
     int output_count = 0;
+    double output_frequency = 1.0;  // Output every 1.0 seconds
     double next_output_time = 0.0;
     uint8_t stable, all_stable = 0;
 
@@ -376,14 +339,14 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     {
         // enforce inlet boundary at every step
 	lbm->updateFluid(physical_speed);
-	// output data at frequency equivalent to `physical_freq` time
-        double display_time = t * display_dt;  // Use display time for clean output
-        if (display_time >= next_output_time)
+	// Output data at regular intervals
+        double current_time = t * dt;  // Current simulation time
+        if (current_time >= next_output_time)
 	{
             if (rank == 0)
             {
-                std::cout << std::fixed << std::setprecision(3) << "LBM-CFD> time: " << display_time << " / " <<
-                             display_simulated_time << " , time step: " << t << " / " << time_steps << std::endl;
+	        std::cout << std::fixed << std::setprecision(3) << "LBM-CFD> time: " << current_time << " / " <<
+                             total_simulated_time << " s, time step: " << t << " / " << time_steps << std::endl;
 	    }
             stable = lbm->checkStability();
             MPI_Reduce(&stable, &all_stable, 1, MPI_UNSIGNED_CHAR, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -399,7 +362,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
             runAscentInSituTasks(mesh, selections, ascent_ptr);
 #endif
             output_count++;
-            next_output_time = output_count * physical_freq;
+            next_output_time = output_count * output_frequency;
         }
 
 	// Diagnostics and VTK/printouts every 1000/5000 steps
