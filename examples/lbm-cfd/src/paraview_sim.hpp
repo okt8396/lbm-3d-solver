@@ -153,7 +153,7 @@ inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, d
 	    //printVTKDebugInfo(t, lbm, speed);
         }
     }
-    if (t % 1000 == 0 && t <= 10000) {
+    if (t % 500 == 0 && t <= 10000) {
         lbm->computeSpeed();
         lbm->gatherDataOnRank0(LbmDQ::Speed);
         if (rank == 0) {

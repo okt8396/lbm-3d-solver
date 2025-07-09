@@ -131,6 +131,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     double physical_length = 2.0;         // m
     double physical_viscosity = 1.3806;   // Pa s
     double kinematic_viscosity = physical_viscosity / physical_density;
+
     double reynolds_number = (physical_density * physical_speed * physical_length) / physical_viscosity;
 
     double dx = physical_length / (double)dim_x;
@@ -213,6 +214,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         if (lattice_speed > 0.1) {
             std::cout << "*** WARNING: High lattice speed! Simulation may be unstable\n";
         }
+
     }
 
     // create LBM object
