@@ -106,8 +106,6 @@ inline void printMeanSpeeds(int t, LbmDQ* lbm, float* speed) {
             count_plane++;
         }
     }
-    double mean_plane = (count_plane > 0) ? (sum_plane / count_plane) : 0.0;
-    printf("[t=%d] Mean speed at global x=1: %.8f (N=%d)\n", t, mean_plane, count_plane);
 }
 
 inline void printSpeedProfileX(int t, LbmDQ* lbm, float* speed) {
@@ -124,8 +122,9 @@ inline void printSpeedProfileX(int t, LbmDQ* lbm, float* speed) {
 }
 
 inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps) {
-    if (t % 100 == 0 && t <= 6000) {
-        lbm->computeSpeed();
+    if (t % 1000 == 0 && t <= 5000) {
+	lbm->computeSpeed();
+
         lbm->gatherDataOnRank0(LbmDQ::Speed);
         
         if (rank == 0) {
@@ -133,33 +132,14 @@ inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, d
             snprintf(vtk_filename, sizeof(vtk_filename), "simulation_state_t%05d.vtk", t);
             exportSimulationStateToVTK(lbm, vtk_filename, dt, dx, physical_density, time_steps);
             float* speed = lbm->getGatheredSpeed();
-
-	    //// Debug: Find maximum speed and its location
-            //int total_points = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
-            //float max_speed = 0.0f;
-            //int max_idx = 0;
-            //for (int i = 0; i < total_points; i++) {
-            //    if (speed[i] > max_speed) {
-            //        max_speed = speed[i];
-            //        max_idx = i;
-            //    }
-            //}
-            //int max_x = max_idx % lbm->getTotalDimX();
-            //int max_y = (max_idx / lbm->getTotalDimX()) % lbm->getTotalDimY();
-            //int max_z = max_idx / (lbm->getTotalDimX() * lbm->getTotalDimY());
-            //printf("[t=%d] Max speed: %.6f at (%d,%d,%d) [lattice: %.6f]\n",
-            //       t, max_speed, max_x, max_y, max_z, max_speed/166.75);
-
-	    //printVTKDebugInfo(t, lbm, speed);
         }
     }
-    if (t % 500 == 0 && t <= 10000) {
-        lbm->computeSpeed();
+    if (t % 1000 == 0 && t <= 5000) {
+	lbm->computeSpeed();
         lbm->gatherDataOnRank0(LbmDQ::Speed);
         if (rank == 0) {
             float* speed = lbm->getGatheredSpeed();
             printMeanSpeeds(t, lbm, speed);
-            //printSpeedProfileX(t, lbm, speed);
         }
     }
 }
