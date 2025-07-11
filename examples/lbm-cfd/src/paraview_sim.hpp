@@ -124,6 +124,7 @@ inline void printSpeedProfileX(int t, LbmDQ* lbm, float* speed) {
 inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps) {
     if (t % 1000 == 0 && t <= 5000) {
 	lbm->computeSpeed();
+
         lbm->gatherDataOnRank0(LbmDQ::Speed);
         
         if (rank == 0) {

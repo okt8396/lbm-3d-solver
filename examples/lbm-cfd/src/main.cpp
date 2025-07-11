@@ -48,6 +48,7 @@ int main(int argc, char **argv) {
     uint32_t dim_y = 50;
     uint32_t dim_z = 50;
     uint32_t time_steps = 10000;
+
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
 
