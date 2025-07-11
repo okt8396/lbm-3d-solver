@@ -44,10 +44,10 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 150;
-    uint32_t dim_y = 75;
-    uint32_t dim_z = 75;
-    uint32_t time_steps = 20000;
+    uint32_t dim_x = 200;
+    uint32_t dim_y = 50;
+    uint32_t dim_z = 50;
+    uint32_t time_steps = 10000;
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
 
@@ -227,71 +227,117 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     // initialize simulation
     int zmin = 0, zmax = dim_z - 1;
 
+    // NEW: Two flat plates with gap (bluff body configuration)
+    // Position close to inlet for maximum wake interaction
+    barriers.clear();
+    
+    int plate_x_position = std::max(1, (int)(dim_x / 8));  // Close to inlet (1/8 of domain), minimum x=1
+    int plate_thickness = 2;                               // Thickness of each plate
+    int gap_size = std::max(2, (int)(dim_y / 6));          // Gap between plates (1/6 of domain height), minimum gap=
+
+    // Ensure gap size is even for symmetric positioning
+    if (gap_size % 2 != 0) gap_size++;
+    
+    // Calculate plate positions
+    int gap_center = dim_y / 2;
+    int gap_half = gap_size / 2;
+    
+    // Top plate: from gap center + gap_half to top of domain
+    int top_plate_ymin = gap_center + gap_half;
+    int top_plate_ymax = dim_y - 1;
+    
+    // Bottom plate: from bottom of domain to gap center - gap_half
+    int bottom_plate_ymin = 0;
+    int bottom_plate_ymax = gap_center - gap_half;
+    
+    // Safety checks to ensure valid configuration
+    if (top_plate_ymin > top_plate_ymax) {
+        if (rank == 0) printf("[WARNING] Top plate invalid, adjusting gap size\n");
+        gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
+	gap_half = gap_size / 2;
+        top_plate_ymin = gap_center + gap_half;
+        bottom_plate_ymax = gap_center - gap_half;
+    }
+    
+    if (bottom_plate_ymin > bottom_plate_ymax) {
+        if (rank == 0) printf("[WARNING] Bottom plate invalid, adjusting gap size\n");
+        gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
+        gap_half = gap_size / 2;
+        top_plate_ymin = gap_center + gap_half;
+        bottom_plate_ymax = gap_center - gap_half;
+    }
+    
+    // Create top plate (spans full z-direction)
+    for (int thickness = 0; thickness < plate_thickness; thickness++) {
+        int x_pos = plate_x_position + thickness;
+        if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
+            barriers.push_back(new Barrier3D(x_pos, x_pos, top_plate_ymin, top_plate_ymax, zmin, zmax));
+        }
+    }
+    
+    // Create bottom plate (spans full z-direction)
+    for (int thickness = 0; thickness < plate_thickness; thickness++) {
+        int x_pos = plate_x_position + thickness;
+        if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
+            barriers.push_back(new Barrier3D(x_pos, x_pos, bottom_plate_ymin, bottom_plate_ymax, zmin, zmax));
+        }
+    }
+
     // OLD barriers (assymetric)
     //barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
     //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
     //barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
     //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
    
-    // TRANSIENT-EXTENDING BARRIERS: Multiple cylinders for complex wake interactions
-    barriers.clear();
-    
-    // Add multiple cylindrical obstacles to create extended transient behavior
-    int cylinder_radius = 3; // Radius for cylindrical obstacles
-    
-    // First cylinder at 1/4 length
-    double cx1 = dim_x / 4.0;
-    double cy1 = dim_y / 2.0;
-    
-    // Second cylinder at 1/2 length, offset vertically
-    double cx2 = dim_x / 2.0;
-    double cy2 = dim_y / 3.0;
-    
-    // Third cylinder at 3/4 length
-    double cx3 = 3.0 * dim_x / 4.0;
-    double cy3 = 2.0 * dim_y / 3.0;
-    
-    // Create cylindrical obstacles (spanning full z-direction)
-    int cylinder1_count = 0, cylinder2_count = 0, cylinder3_count = 0;
-    for (int k = 0; k < (int)dim_z; ++k) {
-        for (int j = 0; j < (int)dim_y; ++j) {
-            for (int i = 0; i < (int)dim_x; ++i) {
-                // Cylinder 1
-                double dx1 = i - cx1;
-                double dy1 = j - cy1;
-                if (dx1*dx1 + dy1*dy1 <= cylinder_radius*cylinder_radius) {
-                    barriers.push_back(new Barrier3D(i, i, j, j, k, k));
-        	    cylinder1_count++;
-                }
-                
-                // Cylinder 2
-                double dx2 = i - cx2;
-                double dy2 = j - cy2;
-                if (dx2*dx2 + dy2*dy2 <= cylinder_radius*cylinder_radius) {
-                    barriers.push_back(new Barrier3D(i, i, j, j, k, k));
-        	    cylinder2_count++;
-                }
-                
-                // Cylinder 3
-                double dx3 = i - cx3;
-                double dy3 = j - cy3;
-                if (dx3*dx3 + dy3*dy3 <= cylinder_radius*cylinder_radius) {
-                    barriers.push_back(new Barrier3D(i, i, j, j, k, k));
-        	    cylinder3_count++;
-                }
-            }
-        }
-    }
-
-    if (rank == 0) {
-        printf("[INFO] Added %d cylindrical obstacles for extended transient behavior\n", 3);
-        printf("  Cylinder 1: x=%.1f, y=%.1f, r=%d (%d points)\n", cx1, cy1, cylinder_radius, cylinder1_count);
-        printf("  Cylinder 2: x=%.1f, y=%.1f, r=%d (%d points)\n", cx2, cy2, cylinder_radius, cylinder2_count);
-        printf("  Cylinder 3: x=%.1f, y=%.1f, r=%d (%d points)\n", cx3, cy3, cylinder_radius, cylinder3_count);
-        printf("  Total barriers created: %d\n", (int)barriers.size());
-        printf("  Domain size: %dx%dx%d\n", (int)dim_x, (int)dim_y, (int)dim_z);
-        printf("  Expected cylinder volume: ~%.1f grid points each\n", 3.14159 * cylinder_radius * cylinder_radius * dim_z);
-    }
+    //// TRANSIENT-EXTENDING BARRIERS: Multiple cylinders for complex wake interactions
+    //barriers.clear();
+    //
+    //// Add multiple cylindrical obstacles to create extended transient behavior
+    //int cylinder_radius = 3; // Radius for cylindrical obstacles
+    //
+    //// First cylinder at 1/4 length
+    //double cx1 = dim_x / 4.0;
+    //double cy1 = dim_y / 2.0;
+    //
+    //// Second cylinder at 1/2 length, offset vertically
+    //double cx2 = dim_x / 2.0;
+    //double cy2 = dim_y / 3.0;
+    //
+    //// Third cylinder at 3/4 length
+    //double cx3 = 3.0 * dim_x / 4.0;
+    //double cy3 = 2.0 * dim_y / 3.0;
+    //
+    //// Create cylindrical obstacles (spanning full z-direction)
+    //int cylinder1_count = 0, cylinder2_count = 0, cylinder3_count = 0;
+    //for (int k = 0; k < (int)dim_z; ++k) {
+    //    for (int j = 0; j < (int)dim_y; ++j) {
+    //        for (int i = 0; i < (int)dim_x; ++i) {
+    //            // Cylinder 1
+    //            double dx1 = i - cx1;
+    //            double dy1 = j - cy1;
+    //            if (dx1*dx1 + dy1*dy1 <= cylinder_radius*cylinder_radius) {
+    //                barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+    //    	    cylinder1_count++;
+    //            }
+    //            
+    //            // Cylinder 2
+    //            double dx2 = i - cx2;
+    //            double dy2 = j - cy2;
+    //            if (dx2*dx2 + dy2*dy2 <= cylinder_radius*cylinder_radius) {
+    //                barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+    //    	    cylinder2_count++;
+    //            }
+    //            
+    //            // Cylinder 3
+    //            double dx3 = i - cx3;
+    //            double dy3 = j - cy3;
+    //            if (dx3*dx3 + dy3*dy3 <= cylinder_radius*cylinder_radius) {
+    //                barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+    //    	    cylinder3_count++;
+    //            }
+    //        }
+    //    }
+    //}
 
     //// NEW barriers (central sphere)
     //barriers.clear();
@@ -389,14 +435,6 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 	auto stream_end = std::chrono::high_resolution_clock::now();
         stream_time += std::chrono::duration_cast<std::chrono::duration<double>>(stream_end - stream_start);
 
-	// Time bounceBackStream step
-        auto bounceback_start = std::chrono::high_resolution_clock::now();
-
-        //lbm->bounceBackStream();
-   
-	auto bounceback_end = std::chrono::high_resolution_clock::now();
-        bounceback_time += std::chrono::duration_cast<std::chrono::duration<double>>(bounceback_end - bounceback_start);
-
 	// Time exchangeBoundaries step
         auto exchange_start = std::chrono::high_resolution_clock::now();
 
@@ -416,17 +454,38 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     if (rank == 0)
     {
         std::cout << "\n=== FINAL TIMING SUMMARY ===" << std::endl;
-        std::cout << "Total steps: " << time_steps << std::endl;
-        std::cout << "Collide:        " << std::fixed << std::setprecision(6) << collide_time.count() << "s ("
-                  << std::setprecision(2) << (collide_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
-        std::cout << "Stream:         " << std::fixed << std::setprecision(6) << stream_time.count() << "s ("
-                  << std::setprecision(2) << (stream_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
-        std::cout << "BounceBack:     " << std::fixed << std::setprecision(6) << bounceback_time.count() << "s ("
-                  << std::setprecision(2) << (bounceback_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;
-        std::cout << "Exchange:       " << std::fixed << std::setprecision(6) << exchange_time.count() << "s ("
-                  << std::setprecision(2) << (exchange_time.count() / total_iteration_time.count()) * 100 << "%)" << std::endl;                                                                                                                         std::cout << "Total:          " << std::fixed << std::setprecision(6) << total_iteration_time.count() << "s" << std::endl;
-        std::cout << "Avg per step:   " << std::fixed << std::setprecision(6) << total_iteration_time.count() / time_steps << "s" << std::endl;
-        std::cout << "Steps/sec:      " << std::fixed << std::setprecision(2) << time_steps / total_iteration_time.count() << std::endl;
+        std::cout << std::left << std::setw(15) << "Metric" << "\t" 
+                  << std::right << std::setw(12) << "Value" << "\t" 
+                  << std::left << std::setw(10) << "Unit" << "\t" 
+                  << std::right << std::setw(10) << "Percentage" << std::endl;
+        std::cout << std::left << std::setw(15) << "Total steps" << "\t" 
+                  << std::right << std::setw(12) << time_steps << "\t" 
+                  << std::left << std::setw(10) << "steps" << "\t" 
+                  << std::right << std::setw(10) << "" << std::endl;
+        std::cout << std::left << std::setw(15) << "Collide" << "\t" 
+                  << std::right << std::setw(12) << std::fixed << std::setprecision(6) << collide_time.count() << "\t" 
+                  << std::left << std::setw(10) << "seconds" << "\t" 
+                  << std::right << std::setw(10) << std::setprecision(2) << (collide_time.count() / total_iteration_time.count()) * 100 << "%" << std::endl;
+        std::cout << std::left << std::setw(15) << "Stream" << "\t" 
+                  << std::right << std::setw(12) << std::fixed << std::setprecision(6) << stream_time.count() << "\t" 
+                  << std::left << std::setw(10) << "seconds" << "\t" 
+                  << std::right << std::setw(10) << std::setprecision(2) << (stream_time.count() / total_iteration_time.count()) * 100 << "%" << std::endl;
+        std::cout << std::left << std::setw(15) << "Exchange" << "\t" 
+                  << std::right << std::setw(12) << std::fixed << std::setprecision(6) << exchange_time.count() << "\t" 
+                  << std::left << std::setw(10) << "seconds" << "\t" 
+                  << std::right << std::setw(10) << std::setprecision(2) << (exchange_time.count() / total_iteration_time.count()) * 100 << "%" << std::endl;
+        std::cout << std::left << std::setw(15) << "Total" << "\t" 
+                  << std::right << std::setw(12) << std::fixed << std::setprecision(6) << total_iteration_time.count() << "\t" 
+                  << std::left << std::setw(10) << "seconds" << "\t" 
+                  << std::right << std::setw(10) << "" << std::endl;
+        std::cout << std::left << std::setw(15) << "Avg per step" << "\t" 
+                  << std::right << std::setw(12) << std::fixed << std::setprecision(6) << total_iteration_time.count() / time_steps << "\t" 
+                  << std::left << std::setw(10) << "seconds" << "\t" 
+                  << std::right << std::setw(10) << "" << std::endl;
+        std::cout << std::left << std::setw(15) << "Steps/sec" << "\t" 
+                  << std::right << std::setw(12) << std::fixed << std::setprecision(2) << time_steps / total_iteration_time.count() << "\t" 
+                  << std::left << std::setw(10) << "steps/sec" << "\t" 
+                  << std::right << std::setw(10) << "" << std::endl;
         std::cout << "========================" << std::endl;
     }
 

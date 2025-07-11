@@ -277,6 +277,7 @@ class LbmDQ
         void computeVorticity();
         void gatherDataOnRank0(FluidProperty property);
         void exchangeBoundaries();
+	void exchangeVelocityBoundaries();
 	void captureBoundaryParticle(int i, int j, int k, int ni, int nj, int nk, int d, float value);
 	uint32_t getDimX();
         uint32_t getDimY();
@@ -1280,17 +1281,24 @@ void LbmDQ::computeVorticity()
 {
     int i; int j; int k; int idx;
 
+    // Exchange velocity boundary data between MPI ranks first
+    exchangeVelocityBoundaries();
+    
+    // Initialize vorticity to zero
+    for (int idx = 0; idx < dim_x * dim_y * dim_z; idx++) {
+        vorticity[idx] = 0.0f;
+    }
+
+    // Calculate vorticity using central differences
     for (k = 1; k < dim_z - 1; k++)
     {
-	for (j = 1; j < dim_y -1; j++)
+	for (j = 1; j < dim_y - 1; j++)
 	{
 	    for (i = 1; i < dim_x - 1; i++)
 	    {
 		idx = idx3D(i, j, k);
-		LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "computeVorticity");
-		LBM_EXTRA_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "vorticity");
-
-		// Bounds check all neighboring accesses
+		
+		// Get neighboring indices for central difference
 		int idx_jp1 = idx3D(i, j + 1, k);
 		int idx_jm1 = idx3D(i, j - 1, k);
 		int idx_kp1 = idx3D(i, j, k + 1);
@@ -1298,23 +1306,46 @@ void LbmDQ::computeVorticity()
 		int idx_ip1 = idx3D(i + 1, j, k);
 		int idx_im1 = idx3D(i - 1, j, k);
 
-		LBM_BOUNDS_CHECK(idx_jp1, dim_x * dim_y * dim_z, "computeVorticity j+1");
-		LBM_BOUNDS_CHECK(idx_jm1, dim_x * dim_y * dim_z, "computeVorticity j-1");
-		LBM_BOUNDS_CHECK(idx_kp1, dim_x * dim_y * dim_z, "computeVorticity k+1");
-		LBM_BOUNDS_CHECK(idx_km1, dim_x * dim_y * dim_z, "computeVorticity k-1");
-		LBM_BOUNDS_CHECK(idx_ip1, dim_x * dim_y * dim_z, "computeVorticity i+1");
-		LBM_BOUNDS_CHECK(idx_im1, dim_x * dim_y * dim_z, "computeVorticity i-1");
+		// Calculate vorticity components using central differences
+		double wx = 0.5 * (velocity_z[idx_jp1] - velocity_z[idx_jm1]) - 0.5 * (velocity_y[idx_kp1] - velocity_y[idx_km1]);
+		double wy = 0.5 * (velocity_x[idx_kp1] - velocity_x[idx_km1]) - 0.5 * (velocity_z[idx_ip1] - velocity_z[idx_im1]);
+		double wz = 0.5 * (velocity_y[idx_ip1] - velocity_y[idx_im1]) - 0.5 * (velocity_x[idx_jp1] - velocity_x[idx_jm1]);
 
-		double wx = (velocity_z[idx_jp1] - velocity_z[idx_jm1]) - (velocity_y[idx_kp1] - velocity_y[idx_km1]);
-
-		double wy = (velocity_z[idx_kp1] - velocity_z[idx_km1]) - (velocity_y[idx_ip1] - velocity_y[idx_im1]);
-
-		double wz = (velocity_z[idx_ip1] - velocity_z[idx_im1]) - (velocity_y[idx_jp1] - velocity_y[idx_jm1]);
-
-		LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "computeVorticity vorticity write");
+		// Store magnitude of vorticity vector
 		vorticity[idx] = sqrt(wx*wx + wy*wy + wz*wz);
 	    }
 	}
+    }
+    
+    // Handle boundary nodes that couldn't be computed with central differences
+    for (k = 0; k < dim_z; k++) {
+        for (j = 0; j < dim_y; j++) {
+            for (i = 0; i < dim_x; i++) {
+                idx = idx3D(i, j, k);
+                
+                // If this is a boundary node that wasn't computed above
+                if (i == 0 || i == dim_x-1 || j == 0 || j == dim_y-1 || k == 0 || k == dim_z-1) {
+                    // If we're at a global boundary (not an MPI boundary), use zero vorticity
+                    if ((i == 0 && offset_x == 0) || 
+                        (i == dim_x-1 && offset_x + dim_x == total_x) ||
+                        (j == 0 && offset_y == 0) || 
+                        (j == dim_y-1 && offset_y + dim_y == total_y) ||
+                        (k == 0 && offset_z == 0) || 
+                        (k == dim_z-1 && offset_z + dim_z == total_z)) {
+                        vorticity[idx] = 0.0f;
+                    }
+                    // For MPI boundaries, we can try to compute if we have neighbors
+                    else if (vorticity[idx] == 0.0f) {
+                        // Find nearest interior point
+                        int ni = std::max(1, std::min(i, (int)dim_x - 2));
+                        int nj = std::max(1, std::min(j, (int)dim_y - 2));
+                        int nk = std::max(1, std::min(k, (int)dim_z - 2));
+                        int nidx = idx3D(ni, nj, nk);
+                        vorticity[idx] = vorticity[nidx];
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1721,6 +1752,79 @@ void LbmDQ::exchangeBoundaries()
     // Clear send buffers for next timestep
     for (int i = 0; i < 10; ++i) {
         send_buffers[i].clear();
+    }
+}
+
+// Exchange velocity boundary data between neighboring MPI ranks for vorticity calculation
+void LbmDQ::exchangeVelocityBoundaries()
+{
+    // Handle X-direction boundaries
+    for (int k = 0; k < dim_z; k++) {
+        for (int j = 0; j < dim_y; j++) {
+            // Left boundary (i=0): copy from i=1
+            if (dim_x > 1) {
+                int boundary_idx = idx3D(0, j, k);
+                int interior_idx = idx3D(1, j, k);
+                velocity_x[boundary_idx] = velocity_x[interior_idx];
+                velocity_y[boundary_idx] = velocity_y[interior_idx];
+                velocity_z[boundary_idx] = velocity_z[interior_idx];
+            }
+
+            // Right boundary (i=dim_x-1): copy from i=dim_x-2
+            if (dim_x > 1) {
+                int boundary_idx = idx3D(dim_x - 1, j, k);
+                int interior_idx = idx3D(dim_x - 2, j, k);
+                velocity_x[boundary_idx] = velocity_x[interior_idx];
+                velocity_y[boundary_idx] = velocity_y[interior_idx];
+                velocity_z[boundary_idx] = velocity_z[interior_idx];
+            }
+        }
+    }
+
+    // Handle Y-direction boundaries
+    for (int k = 0; k < dim_z; k++) {
+        for (int i = 0; i < dim_x; i++) {
+            // Back boundary (j=0): copy from j=1
+            if (dim_y > 1) {
+                int boundary_idx = idx3D(i, 0, k);
+                int interior_idx = idx3D(i, 1, k);
+                velocity_x[boundary_idx] = velocity_x[interior_idx];
+                velocity_y[boundary_idx] = velocity_y[interior_idx];
+                velocity_z[boundary_idx] = velocity_z[interior_idx];
+            }
+
+            // Front boundary (j=dim_y-1): copy from j=dim_y-2
+            if (dim_y > 1) {
+                int boundary_idx = idx3D(i, dim_y - 1, k);
+                int interior_idx = idx3D(i, dim_y - 2, k);
+                velocity_x[boundary_idx] = velocity_x[interior_idx];
+                velocity_y[boundary_idx] = velocity_y[interior_idx];
+                velocity_z[boundary_idx] = velocity_z[interior_idx];
+            }
+        }
+    }
+
+    // Handle Z-direction boundaries
+    for (int j = 0; j < dim_y; j++) {
+        for (int i = 0; i < dim_x; i++) {
+            // Bottom boundary (k=0): copy from k=1
+            if (dim_z > 1) {
+                int boundary_idx = idx3D(i, j, 0);
+                int interior_idx = idx3D(i, j, 1);
+                velocity_x[boundary_idx] = velocity_x[interior_idx];
+                velocity_y[boundary_idx] = velocity_y[interior_idx];
+                velocity_z[boundary_idx] = velocity_z[interior_idx];
+            }
+
+            // Top boundary (k=dim_z-1): copy from k=dim_z-2
+            if (dim_z > 1) {
+                int boundary_idx = idx3D(i, j, dim_z - 1);
+                int interior_idx = idx3D(i, j, dim_z - 2);
+                velocity_x[boundary_idx] = velocity_x[interior_idx];
+                velocity_y[boundary_idx] = velocity_y[interior_idx];
+                velocity_z[boundary_idx] = velocity_z[interior_idx];
+            }
+        }
     }
 }
 
