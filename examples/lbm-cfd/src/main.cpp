@@ -18,7 +18,8 @@
 
 void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, void *ptr, LbmDQ::LatticeType lattice_type);
 void createDivergingColorMap(uint8_t *cmap, uint32_t size);
-void exportSimulationStateToVTK(LbmDQ* lbm, const char* filename, double dt, double dx, double physical_density, uint32_t time_steps);
+void exportSimulationStateToVTS(LbmDQ* lbm, const char* filename, double dt, double dx, double physical_density, uint32_t time_steps);
+void exportVelocityDiagnostics(int t, int rank, int num_ranks, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps);
 
 #ifdef ASCENT_ENABLED
 void updateAscentData(int rank, int num_ranks, int step, double time, conduit::Node &mesh);
@@ -47,7 +48,7 @@ int main(int argc, char **argv) {
     uint32_t dim_x = 200;
     uint32_t dim_y = 50;
     uint32_t dim_z = 50;
-    uint32_t time_steps = 10000;
+    uint32_t time_steps = 3000;
 
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -228,67 +229,158 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     // initialize simulation
     int zmin = 0, zmax = dim_z - 1;
 
-    // NEW: Two flat plates with gap (bluff body configuration)
-    // Position close to inlet for maximum wake interaction
+    // NEW: Diamond-shaped (square rotated 45°) bluff body barriers
+    // Creates strong vortex shedding with extended transient behavior
     barriers.clear();
-    
-    int plate_x_position = std::max(1, (int)(dim_x / 8));  // Close to inlet (1/8 of domain), minimum x=1
-    int plate_thickness = 2;                               // Thickness of each plate
-    int gap_size = std::max(2, (int)(dim_y / 6));          // Gap between plates (1/6 of domain height), minimum gap=
 
-    // Ensure gap size is even for symmetric positioning
-    if (gap_size % 2 != 0) gap_size++;
-    
-    // Calculate plate positions
-    int gap_center = dim_y / 2;
-    int gap_half = gap_size / 2;
-    
-    // Top plate: from gap center + gap_half to top of domain
-    int top_plate_ymin = gap_center + gap_half;
-    int top_plate_ymax = dim_y - 1;
-    
-    // Bottom plate: from bottom of domain to gap center - gap_half
-    int bottom_plate_ymin = 0;
-    int bottom_plate_ymax = gap_center - gap_half;
-    
-    // Safety checks to ensure valid configuration
-    if (top_plate_ymin > top_plate_ymax) {
-        if (rank == 0) printf("[WARNING] Top plate invalid, adjusting gap size\n");
-        gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
-	gap_half = gap_size / 2;
-        top_plate_ymin = gap_center + gap_half;
-        bottom_plate_ymax = gap_center - gap_half;
-    }
-    
-    if (bottom_plate_ymin > bottom_plate_ymax) {
-        if (rank == 0) printf("[WARNING] Bottom plate invalid, adjusting gap size\n");
-        gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
-        gap_half = gap_size / 2;
-        top_plate_ymin = gap_center + gap_half;
-        bottom_plate_ymax = gap_center - gap_half;
-    }
-    
-    // Create top plate (spans full z-direction)
-    for (int thickness = 0; thickness < plate_thickness; thickness++) {
-        int x_pos = plate_x_position + thickness;
-        if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
-            barriers.push_back(new Barrier3D(x_pos, x_pos, top_plate_ymin, top_plate_ymax, zmin, zmax));
+    // Configuration parameters
+    int diamond_x_center = std::max(10, (int)(dim_x / 6));  // Position at 1/6 of domain
+    int diamond_y_center = dim_y / 2;                       // Center vertically
+    int diamond_size = std::max(5, (int)(dim_y / 8));       // Size based on domain height
+
+    // Optional: Create multiple diamonds for more complex flow
+    bool use_multiple_diamonds = false;
+
+    if (use_multiple_diamonds) {
+        // Create three diamond obstacles at different positions
+        std::vector<std::pair<int, int>> diamond_centers = {
+            {diamond_x_center, diamond_y_center},
+            {diamond_x_center + (int)(dim_x / 3), diamond_y_center - (int)(dim_y / 6)},
+            {diamond_x_center + (int)(2 * dim_x / 3), diamond_y_center + (int)(dim_y / 6)}
+        };
+
+        for (const auto& center : diamond_centers) {
+            int cx = center.first;
+            int cy = center.second;
+
+            // Create diamond shape (rotated square)
+            for (int k = 0; k < (int)dim_z; ++k) {
+                for (int j = 0; j < (int)dim_y; ++j) {
+                    for (int i = 0; i < (int)dim_x; ++i) {
+                        // Diamond shape condition: |x-cx| + |y-cy| <= size
+                        int dx = abs(i - cx);
+                        int dy = abs(j - cy);
+
+                        if (dx + dy <= diamond_size && i >= 0 && i < (int)dim_x &&
+                            j >= 0 && j < (int)dim_y && k >= 0 && k < (int)dim_z) {
+                            barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Single larger diamond for simpler but still interesting flow
+        int large_diamond_size = std::max(8, (int)(dim_y / 5));
+
+        // Create single diamond shape
+        for (int k = 0; k < (int)dim_z; ++k) {
+            for (int j = 0; j < (int)dim_y; ++j) {
+                for (int i = 0; i < (int)dim_x; ++i) {
+                    // Diamond shape condition: |x-cx| + |y-cy| <= size
+                    int dx = abs(i - diamond_x_center);
+                    int dy = abs(j - diamond_y_center);
+
+                    if (dx + dy <= large_diamond_size && i >= 0 && i < (int)dim_x &&
+                        j >= 0 && j < (int)dim_y && k >= 0 && k < (int)dim_z) {
+                        barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+                    }
+                }
+            }
         }
     }
-    
-    // Create bottom plate (spans full z-direction)
-    for (int thickness = 0; thickness < plate_thickness; thickness++) {
-        int x_pos = plate_x_position + thickness;
-        if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
-            barriers.push_back(new Barrier3D(x_pos, x_pos, bottom_plate_ymin, bottom_plate_ymax, zmin, zmax));
-        }
+
+    if (rank == 0) {
+        printf("[INFO] Created diamond-shaped bluff body barriers\n");
+        printf("[INFO] Configuration: %s diamonds, size=%d, center=(%d,%d)\n",
+               use_multiple_diamonds ? "Multiple" : "Single",
+               use_multiple_diamonds ? diamond_size : diamond_size,
+               diamond_x_center, diamond_y_center);
     }
 
-    // OLD barriers (assymetric)
-    //barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
-    //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 8 * dim_y / 27 + 1, 12 * dim_y / 27 - 1, zmin, zmax));
-    //barriers.push_back(new Barrier3D(dim_x / 8, dim_x / 8, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
-    //barriers.push_back(new Barrier3D(dim_x / 8 + 1, dim_x / 8 + 1, 13 * dim_y / 27 + 1, 17 * dim_y / 27 - 1, zmin, zmax));
+    //// ALTERNATIVE: Square cylinder barriers for von Kármán vortex street
+    //// Uncomment this section and comment out the diamond barriers above to use square cylinders
+    //barriers.clear();
+    //
+    //// Configuration for square cylinder
+    //int square_x_center = std::max(10, (int)(dim_x / 6));  // Position at 1/6 of domain
+    //int square_y_center = dim_y / 2;                       // Center vertically
+    //int square_half_size = std::max(4, (int)(dim_y / 10)); // Half-size of square
+    //
+    //// Create square cylinder (spans full z-direction)
+    //for (int k = 0; k < (int)dim_z; ++k) {
+    //    for (int j = square_y_center - square_half_size; j <= square_y_center + square_half_size; ++j) {
+    //        for (int i = square_x_center - square_half_size; i <= square_x_center + square_half_size; ++i) {
+    //            if (i >= 0 && i < (int)dim_x && j >= 0 && j < (int)dim_y && k >= 0 && k < (int)dim_z) {
+    //                barriers.push_back(new Barrier3D(i, i, j, j, k, k));
+    //            }
+    //        }
+    //    }
+    //}
+    //
+    //if (rank == 0) {
+    //    printf("[INFO] Created square cylinder barrier\n");
+    //    printf("[INFO] Configuration: size=%dx%d, center=(%d,%d)\n",
+    //           2*square_half_size+1, 2*square_half_size+1, square_x_center, square_y_center);
+    //}
+
+
+    //// NEW: Two flat plates with gap (bluff body configuration)
+    //// Position close to inlet for maximum wake interaction
+    //barriers.clear();
+    //
+    //int plate_x_position = std::max(1, (int)(dim_x / 8));  // Close to inlet (1/8 of domain), minimum x=1
+    //int plate_thickness = 2;                               // Thickness of each plate
+    //int gap_size = std::max(2, (int)(dim_y / 6));          // Gap between plates (1/6 of domain height), minimum gap=
+
+    //// Ensure gap size is even for symmetric positioning
+    //if (gap_size % 2 != 0) gap_size++;
+    //
+    //// Calculate plate positions
+    //int gap_center = dim_y / 2;
+    //int gap_half = gap_size / 2;
+    //
+    //// Top plate: from gap center + gap_half to top of domain
+    //int top_plate_ymin = gap_center + gap_half;
+    //int top_plate_ymax = dim_y - 1;
+    //
+    //// Bottom plate: from bottom of domain to gap center - gap_half
+    //int bottom_plate_ymin = 0;
+    //int bottom_plate_ymax = gap_center - gap_half;
+    //
+    //// Safety checks to ensure valid configuration
+    //if (top_plate_ymin > top_plate_ymax) {
+    //    if (rank == 0) printf("[WARNING] Top plate invalid, adjusting gap size\n");
+    //    gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
+    //    gap_half = gap_size / 2;
+    //    top_plate_ymin = gap_center + gap_half;
+    //    bottom_plate_ymax = gap_center - gap_half;
+    //}
+    //
+    //if (bottom_plate_ymin > bottom_plate_ymax) {
+    //    if (rank == 0) printf("[WARNING] Bottom plate invalid, adjusting gap size\n");
+    //    gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
+    //    gap_half = gap_size / 2;
+    //    top_plate_ymin = gap_center + gap_half;
+    //    bottom_plate_ymax = gap_center - gap_half;
+    //}
+    //
+    //// Create top plate (spans full z-direction)
+    //for (int thickness = 0; thickness < plate_thickness; thickness++) {
+    //    int x_pos = plate_x_position + thickness;
+    //    if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
+    //        barriers.push_back(new Barrier3D(x_pos, x_pos, top_plate_ymin, top_plate_ymax, zmin, zmax));
+    //    }
+    //}
+    //
+    //// Create bottom plate (spans full z-direction)
+    //for (int thickness = 0; thickness < plate_thickness; thickness++) {
+    //    int x_pos = plate_x_position + thickness;
+    //    if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
+    //        barriers.push_back(new Barrier3D(x_pos, x_pos, bottom_plate_ymin, bottom_plate_ymax, zmin, zmax));
+    //    }
+    //}
+
    
     //// TRANSIENT-EXTENDING BARRIERS: Multiple cylinders for complex wake interactions
     //barriers.clear();
@@ -415,7 +507,10 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         }
 
 	// Diagnostics and VTK/printouts every 1000/5000 steps
-        printSimulationDiagnostics(t, rank, lbm, dt, dx, physical_density, time_steps);
+        //printSimulationDiagnostics(t, rank, lbm, dt, dx, physical_density, time_steps);
+	
+	// Export velocity vectors for streamline visualization
+        exportVelocityDiagnostics(t, rank, num_ranks, lbm, dt, dx, physical_density, time_steps);
 
 	// Time the entire iteration
         start_time = std::chrono::high_resolution_clock::now();
