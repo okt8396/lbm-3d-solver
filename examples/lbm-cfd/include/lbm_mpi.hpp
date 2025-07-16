@@ -1021,8 +1021,8 @@ void LbmDQ::collide(double viscosity, int t)
 				}
 				
 				// Handle wall boundaries (no-slip: zero velocity)
-				int global_j = start_y + j;
-				int global_k = start_z + k;
+				int global_j = offset_y + j;
+				int global_k = offset_z + k;
 				if (global_j == 0 || global_j == total_y - 1 || global_k == 0 || global_k == total_z - 1) {
 					// Wall boundary - set to zero velocity
 					density[idx] = 1.0;
