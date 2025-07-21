@@ -11,46 +11,6 @@
 #include <set>
 #include <vector>
 
-#define MPI_CHECK(call) \
-    do { \
-        int mpi_err = (call); \
-        if (mpi_err != MPI_SUCCESS) { \
-            char err_str[MPI_MAX_ERROR_STRING]; \
-            int err_len; \
-            MPI_Error_string(mpi_err, err_str, &err_len); \
-            fprintf(stderr, "MPI error at %s:%d: %s\n", __FILE__, __LINE__, err_str); \
-	    MPI_Abort(MPI_COMM_WORLD, mpi_err); \
-        } \
-    } while (0)
-
-// Add bounds checking macro
-#ifndef LBM_BOUNDS_CHECK
-#define LBM_BOUNDS_CHECK(idx, arrsize, msg) \
-    if ((idx) < 0 || (idx) >= (arrsize)) { \
-	fprintf(stderr, "Out-of-bounds access: %s at idx=%d, arrsize=%d\n", (msg), (idx), (arrsize)); \
-	MPI_Abort(MPI_COMM_WORLD, 1); \
-    }
-#endif
-
-// Add extra debug bounds check macro
-#ifndef LBM_EXTRA_BOUNDS_CHECK
-#define LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, arrname) \
-    if ((idx) < 0 || (idx) >= (arrsize)) { \
-        fprintf(stderr, "[Rank %d] EXTRA BOUNDS ERROR: %s write at idx=%d, arrsize=%d\n", rank, (arrname), (idx), (arrsize)); \
-	MPI_Abort(MPI_COMM_WORLD, 1); \
-    }
-#endif
-
-// Add a macro for memcpy bounds checking and debug
-#ifndef LBM_MEMCPY_BOUNDS_CHECK
-#define LBM_MEMCPY_BOUNDS_CHECK(dst, dst_size, src, src_size, num, type, label) \
-    if (((dst) < (type*)0x1000) || ((src) < (type*)0x1000) || \
-        ((dst) + (num) > (dst) + (dst_size)) || ((src) + (num) > (src) + (src_size))) { \
-	fprintf(stderr, "[Rank %d] MEMCPY_BOUNDS_ERROR: %s dst=%p src=%p num=%d dst_size=%d src_size=%d\n", rank, (label), (void*)(dst), (void*)(src), (num), (dst_size), (src_size)); \
-	MPI_Abort(MPI_COMM_WORLD, 1); \  
-    }
-#endif
-
 // Helper class for creating barriers
 class Barrier
 {
@@ -229,16 +189,7 @@ class LbmDQ
 
 	ParticleBuffer send_buffers[10];  // One for each neighbor direction
 	ParticleBuffer recv_buffers[10];
-
-	// Helper function to print memory usage
-        void printMemoryUsage(const char* label, size_t bytes) {
-            double mb = bytes / (1024.0 * 1024.0);
-            double gb = mb / 1024.0; // NOLINT
-            if (rank == 0) {
-            //std::cout << "Memory usage - " << label << ": " << mb << " MB (" << gb << " GB)" << std::endl;
-            }
-        }
-
+	
 	// Add a member variable to track if corruption has been reported
 	bool guard_corruption_reported = false;
 	
@@ -254,8 +205,6 @@ class LbmDQ
 
         inline float& f_at(int d, int x, int y, int z) const {
             int idx = idx3D(x, y, z);
-            LBM_BOUNDS_CHECK(d, Q, "f_at direction");
-            LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "f_at index");
 	    return fPtr[d][idx];
         }
 
@@ -298,10 +247,6 @@ class LbmDQ
         uint32_t* getRankLocalStart(int rank);
         uint8_t* getBarrier();
 	static constexpr int TAG_F  = 100;
-        static constexpr int TAG_D  = 101;
-        static constexpr int TAG_VX = 102;
-        static constexpr int TAG_VY = 103;
-        static constexpr int TAG_VZ = 104;
 	static constexpr int TAG_B  = 105;
 
 	// Local data access
@@ -347,7 +292,6 @@ class LbmDQ
 
 	// Check guard bytes for buffer overruns
         void checkGuards() {
-            static bool guard_reported[GUARD_SIZE] = {false};
 	    bool guard_ok = true;
             for (int i = 0; i < GUARD_SIZE; ++i) {
                 if (recv_buf && recv_buf[array_size + i] != GUARD_FLOAT) {
@@ -361,7 +305,6 @@ class LbmDQ
 		    guard_ok = false;
                 }
             }
-            uint32_t size = dim_x * dim_y * dim_z;
 	    if (dbl_arrays) {
                 uint32_t dbl_arrays_size = dim_x * dim_y * dim_z;
 		for (int i = 0; i < GUARD_SIZE; ++i) {
@@ -398,47 +341,6 @@ class LbmDQ
         inline uint8_t* getLocalBarrier() { return barrier; }
         // Add public getter for discrete velocity array c
         inline const int (*getC() const)[3] { return c; }
-
-	// Add this public debug function to LbmDQ
-        void debugPrintDensityStats(const char* label) {
-            float min_rho = 1e10, max_rho = -1e10, sum_rho = 0.0f;
-            int count = 0;
-            for (int k = 0; k < dim_z; ++k) {
-                for (int j = 0; j < dim_y; ++j) {
-                    for (int i = 0; i < dim_x; ++i) {
-                        int idx = idx3D(i, j, k);
-                        float rho = density[idx];
-                        if (rho < min_rho) min_rho = rho;
-                        if (rho > max_rho) max_rho = rho;
-                        sum_rho += rho;
-                        count++;
-                    }
-                }
-            }
-            printf("[Rank %d] %s: min_rho=%.6f, max_rho=%.6f, mean_rho=%.6f\n", rank, label, min_rho, max_rho, sum_rho / count);
-        }
-
-	// Debug: Print fPtr at a few interior nodes (not at inlet or outlet)
-        void printInteriorFptrDebug(int t) {
-            if (rank >= 2) return;
-            int i0 = dim_x / 2, j0 = dim_y / 2, k0 = dim_z / 2;
-            for (int di = 0; di < 2; ++di) {
-                for (int dj = 0; dj < 2; ++dj) {
-                    for (int dk = 0; dk < 2; ++dk) {
-                        int i = i0 + di, j = j0 + dj, k = k0 + dk;
-                        if (i <= 0 || i >= dim_x-1) continue;
-                        if (j <= 0 || j >= dim_y-1) continue;
-                        if (k <= 0 || k >= dim_z-1) continue;
-                        int idx = idx3D(i, j, k);
-                        printf("[Rank %d][t=%d] fPtr at (i=%d, j=%d, k=%d): ", rank, t, i, j, k);
-                        for (int d = 0; d < Q; ++d) {
-                            printf("%g ", fPtr[d][idx]);
-                        }
-                        printf("\n");
-                    }
-                }
-            }
-        }
 };
 
 namespace {
@@ -780,7 +682,6 @@ LbmDQ::LbmDQ(uint32_t width, uint32_t height, uint32_t depth, double scale, int 
     // allocate boolean array
     barrier = new uint8_t[size];
     total_memory += size * sizeof(uint8_t);
-    printMemoryUsage("Barrier array", size * sizeof(uint8_t));
 
     // Allocate rank_local_size and rank_local_start arrays
     rank_local_size = new uint32_t[2 * num_ranks];
@@ -853,11 +754,11 @@ LbmDQ::~LbmDQ()
     bool guard_ok = true;
     for (int i = 0; i < GUARD_SIZE; ++i) {
         if (recv_buf && recv_buf[array_size + i] != GUARD_FLOAT) {
-            fprintf(stderr, "[Rank %d] WARNING: recv_buf guard byte %d corrupted! Value: %d", rank, i, recv_buf[array_size + i]);
+            fprintf(stderr, "[Rank %d] WARNING: recv_buf guard byte %d corrupted! Value: %f", rank, i, recv_buf[array_size + i]);
 	    guard_ok = false;
         }
         if (brecv_buf && brecv_buf[array_size + i] != GUARD_BOOL) {
-            fprintf(stderr, "[Rank %d] WARNING: brecv_buf guard byte %d corrupted! Value: %d", rank, i, brecv_buf[array_size + i]);
+            fprintf(stderr, "[Rank %d] WARNING: brecv_buf guard byte %d corrupted! Value: %hhu", rank, i, brecv_buf[array_size + i]);
 	    guard_ok = false;
         }
     }
@@ -868,10 +769,10 @@ LbmDQ::~LbmDQ()
             float actual = dbl_arrays[(Q + 6) * dbl_arrays_size + i];
             if (actual != expected) {
                 if (!guard_reported[i]) {
-                    fprintf(stderr, "[Rank %d] FIRST CORRUPTION: dbl_arrays guard byte %d corrupted! Expected: %d, Actual: %d", rank, i, expected, actual);
+                    fprintf(stderr, "[Rank %d] FIRST CORRUPTION: dbl_arrays guard byte %d corrupted! Expected: %f, Actual: %f", rank, i, expected, actual);
 		    guard_reported[i] = true;
                 }
-		fprintf(stderr, "[Rank %d] WARNING: dbl_arrays guard byte %d corrupted! Value: %d", rank, i, actual);
+		fprintf(stderr, "[Rank %d] WARNING: dbl_arrays guard byte %d corrupted! Value: %f", rank, i, actual);
 		guard_ok = false;
             }
         }
@@ -926,7 +827,6 @@ void LbmDQ::initFluid(double physical_speed)
                 } else {
                     setEquilibrium(i, j, k, 0.0, 0.0, 0.0, 1.0); // Rest of domain: at rest
                 }
-		LBM_BOUNDS_CHECK(idx3D(i, j, k), dim_x * dim_y * dim_z, "initFluid vorticity");
 		vorticity[idx3D(i, j, k)] = 0.0;
             }
         }
@@ -935,10 +835,9 @@ void LbmDQ::initFluid(double physical_speed)
 
 void LbmDQ::updateFluid(double physical_speed)
 {
-    int i, j, k;
+    int j, k;
     double speed = speed_scale * physical_speed;
     static int call_count = 0;
-    bool do_print = (rank < 2 && call_count < 3);
 
     // Only set equilibrium for the physical inlet (global x=0)
     for (k = 0; k < dim_z; k++) {
@@ -967,11 +866,7 @@ void LbmDQ::updateFluid(double physical_speed)
                         double cu = 3.0 * (c[d][0] * ux + c[d][1] * uy + c[d][2] * uz);
                         fPtr[d][idx] = w[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usq);
                     }
-                }
-		
-		if (do_print && j == dim_y/2 && k == dim_z/2) {
-		    //printf("[Rank %d][updateFluid] Zou-He inlet at (i=0, j=%d, k=%d, speed=%f, rho=%f)\n", rank, j, k, speed, rho);
-		}
+                }	
             }
         }
     }
@@ -988,8 +883,6 @@ void LbmDQ::collide(double viscosity, int t)
 	    printf("[DEBUG] viscosity=%f, omega=%f\n", viscosity, omega);
 	    omega_printed = true;
 	}
-        int arrsize = dim_x * dim_y * dim_z;
-        static bool first_invalid_rho_printed = false;	
 	for (k = 0; k < dim_z; k++)
 	{
 		for (j = 0; j < dim_y; j++)
@@ -1036,34 +929,15 @@ void LbmDQ::collide(double viscosity, int t)
 					}
 					continue; // skip collision for walls
 				}
-				LBM_BOUNDS_CHECK(idx, arrsize, "collide main");
 				double rho = 0.0, ux = 0.0, uy = 0.0, uz = 0.0;
 				for (int d = 0; d < Q; ++d)
 				{
-					LBM_BOUNDS_CHECK(idx, arrsize, "collide fPtr");
-					LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "fPtr[d]");
 					double fv = fPtr[d][idx];
 					rho += fv;
 					ux  += fv * c[d][0];
 					uy  += fv * c[d][1];
 					uz  += fv * c[d][2];
 				}
-				// === DEBUG: Check for invalid rho ===
-				if (!first_invalid_rho_printed && (rho <= 0.0 || std::isnan(rho) || std::isinf(rho))) {
-                    		printf("[collide][t=%d] WARNING: Invalid rho at (i=%d, j=%d, k=%d): rho=%f\n", t, i, j, k, rho);
-                    		for (int dd = 0; dd < Q; ++dd) {
-                     	            printf("  fPtr[%d][idx]=%f\n", dd, fPtr[dd][idx]);
-                    		}
-                    		if (barrier) {
-                        	    printf("  barrier[%d]=%d\n", idx, barrier[idx]);
-                    		} else {
-                        	    printf("  barrier[%d]=NULL\n", idx);
-                    		}
-				first_invalid_rho_printed = true;
-                		}
-				// === END DEBUG ===
-				LBM_BOUNDS_CHECK(idx, arrsize, "collide density");
-				LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "density]");
 				density[idx] = rho;
 				ux /= rho; uy /= rho; uz /= rho;
 				
@@ -1075,14 +949,8 @@ void LbmDQ::collide(double viscosity, int t)
 					uy *= scale;
 					uz *= scale;
 				}
-				LBM_BOUNDS_CHECK(idx, arrsize, "collide velocity_x");
-				LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "velocity_x");
 				velocity_x[idx] = ux;
-				LBM_BOUNDS_CHECK(idx, arrsize, "collide velocity_y");
-				LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "velocity_y");
 				velocity_y[idx] = uy;
-				LBM_BOUNDS_CHECK(idx, arrsize, "collide velocity_z");
-				LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "velocity_z");
 				velocity_z[idx] = uz;
 
 				double usqr = ux*ux + uy*uy + uz*uz;
@@ -1090,9 +958,6 @@ void LbmDQ::collide(double viscosity, int t)
 				{
 					double cu = 3.0 * (c[d][0]*ux + c[d][1]*uy + c[d][2]*uz);
 					double feq = w[d] * rho * (1.0 + cu + 0.5*cu*cu - 1.5*usqr);
-					LBM_BOUNDS_CHECK(idx, arrsize, "collide fPtr update");
-					LBM_EXTRA_BOUNDS_CHECK(idx, arrsize, "fPtr[d] update");
-					double old_f = fPtr[d][idx];
 					fPtr[d][idx] += omega * (feq - fPtr[d][idx]);
 				}
 			}
@@ -1169,7 +1034,6 @@ void LbmDQ::stream()
 			for (int j = 0; j < dim_y; ++j) {
 				for (int i = 0; i < dim_x; ++i) {
 					int idx = idx3D(i, j, k);
-					LBM_BOUNDS_CHECK(idx, slice, "stream");
 					
 					int ni = i + c[d][0];
 					int nj = j + c[d][1];
@@ -1183,7 +1047,6 @@ void LbmDQ::stream()
 					}
 					
 					int nidx = idx3D(ni, nj, nk);
-					LBM_BOUNDS_CHECK(nidx, slice, "stream fPtr update");
 				
 					// Check if destination is a barrier
 					if (barrier[nidx]) {
@@ -1246,7 +1109,6 @@ bool LbmDQ::checkStability()
 	for (i = 0; i < dim_x; i++)
 	    {
 	        idx = idx3D(i, j, k);
-	    LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "checkStability");
 		if (density[idx] <= 0)
 		{
 		    stable = false;
@@ -1267,9 +1129,6 @@ void LbmDQ::computeSpeed()
             for (i = 0; i < dim_x; i++)
             {
 		idx = idx3D(i, j, k);
-		LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "computeSpeed");
-		LBM_EXTRA_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "speed");
-		LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "computeSpeed speed write");
 		speed[idx] = sqrt(velocity_x[idx] * velocity_x[idx] + velocity_y[idx] * velocity_y[idx] + velocity_z[idx] * velocity_z[idx]);
 	    }
 	}
@@ -1370,7 +1229,6 @@ void LbmDQ::gatherDataOnRank0(FluidProperty property)
     }
     MPI_Status status;
     uint32_t local_size = dim_x * dim_y * dim_z;
-    uint32_t global_size = total_x * total_y * total_z;
     if (rank == 0)
     {
     	// Compute offset for rank 0's own data in the global buffer
@@ -1396,9 +1254,7 @@ void LbmDQ::gatherDataOnRank0(FluidProperty property)
                 for (uint32_t j = 0; j < num_y; ++j) {
                 uint32_t dst_base = base + k * total_x * total_y + j * total_x;
                 uint32_t src_base = k * num_y * num_x + j * num_x;
-                LBM_MEMCPY_BOUNDS_CHECK(recv_buf + dst_base, array_size + GUARD_SIZE - dst_base, send_buf + src_base, local_size - src_base, num_x, float, "rank0-own-float");
 		std::memcpy(recv_buf + dst_base, send_buf + src_base, num_x * sizeof(float));
-		LBM_MEMCPY_BOUNDS_CHECK(brecv_buf + dst_base, array_size + GUARD_SIZE - dst_base, bsend_buf + src_base, local_size - src_base, num_x, uint8_t, "rank0-own-bool");
                 std::memcpy(brecv_buf + dst_base, bsend_buf + src_base, num_x * sizeof(uint8_t));
             }
         }
@@ -1429,9 +1285,7 @@ void LbmDQ::gatherDataOnRank0(FluidProperty property)
                 for (uint32_t j = 0; j < r_num_y; ++j) {
                     uint32_t dst_base = base + k * total_x * total_y + j * total_x;
                     uint32_t src_base = k * r_num_y * r_num_x + j * r_num_x;
-		    LBM_MEMCPY_BOUNDS_CHECK(recv_buf + dst_base, array_size + GUARD_SIZE - dst_base, temp_f.data() + src_base, rsize - src_base, r_num_x, float, "rankR-float");
                     std::memcpy(recv_buf + dst_base, temp_f.data() + src_base, r_num_x * sizeof(float));
-		    LBM_MEMCPY_BOUNDS_CHECK(brecv_buf + dst_base, array_size + GUARD_SIZE - dst_base, temp_b.data() + src_base, rsize - src_base, r_num_x, uint8_t, "rankR-bool");
                     std::memcpy(brecv_buf + dst_base, temp_b.data() + src_base, r_num_x * sizeof(uint8_t));
 		}
             }
@@ -1558,14 +1412,9 @@ uint8_t* LbmDQ::getBarrier()
 void LbmDQ::setEquilibrium(int x, int y, int z, double new_velocity_x, double new_velocity_y, double new_velocity_z, double new_density)
 {
 	int idx = idx3D(x, y, z);
-	LBM_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "setEquilibrium");
-	LBM_EXTRA_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "setEquilibrium density");
 	density[idx] = new_density;
-	LBM_EXTRA_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "setEquilibrium velocity_x");
 	velocity_x[idx] = new_velocity_x;
-	LBM_EXTRA_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "setEquilibrium velocity_y");
 	velocity_y[idx] = new_velocity_y;
-	LBM_EXTRA_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "setEquilibrium velocity_x");
 	velocity_z[idx] = new_velocity_z;
 
 	double ux = new_velocity_x;
@@ -1575,9 +1424,7 @@ void LbmDQ::setEquilibrium(int x, int y, int z, double new_velocity_x, double ne
 
 	for (int d = 0; d < Q; ++d)
 	{
-		LBM_EXTRA_BOUNDS_CHECK(d, Q, "setEquilibrium direction");
 		double cu = 3.0 * (c[d][0] * ux + c[d][1] * uy + c[d][2] * uz);
-		LBM_EXTRA_BOUNDS_CHECK(idx, dim_x * dim_y * dim_z, "setEquilibrium f_at write");
 		f_at(d, x, y, z) = w[d] * new_density * (1.0 + cu + 0.5*cu*cu - 1.5*usq);
 	}
 }
