@@ -45,10 +45,12 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
     }
 
-    uint32_t dim_x = 200;
-    uint32_t dim_y = 50;
-    uint32_t dim_z = 50;
-    uint32_t time_steps = 3000;
+
+    uint32_t dim_x = 75;
+    uint32_t dim_y = 75;
+    uint32_t dim_z = 75;
+    uint32_t time_steps = 5000;
+
 
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
@@ -78,7 +80,7 @@ int main(int argc, char **argv) {
     }
 
     if (rank == 0) {
-        std::cout << "LBM-CFD> running with " << num_ranks << " processes" << std::endl;
+        std::cout << "\nLBM-CFD> running with " << num_ranks << " processes" << std::endl;
         std::cout << "LBM-CFD> resolution=" << dim_x << "x" << dim_y << "x" << dim_z << ", time steps=" << time_steps << std::endl;
         std::cout << "LBM-CFD> using " << (lattice_type == LbmDQ::D3Q15 ? "D3Q15" : (lattice_type == LbmDQ::D3Q19 ? "D3Q19" : "D3Q27")) << " lattice model" << std::endl;
     }
@@ -108,19 +110,12 @@ int main(int argc, char **argv) {
 
     // Run simulation
     runLbmCfdSimulation(rank, num_ranks, dim_x, dim_y, dim_z, time_steps, ascent_ptr, lattice_type);
-//    std::cout << "[Rank " << rank << "] Returned from runLbmCfdSimulation." << std::endl;
 
 #ifdef ASCENT_ENABLED
     ascent.close();
 #endif
 
-//    std::cout << "[Rank " << rank << "] About to call MPI_Barrier before MPI_Finalize." << std::endl;
-//    MPI_Barrier(MPI_COMM_WORLD);
-//    std::cout << "[Rank " << rank << "] Passed MPI_Barrier." << std::endl;
-
-//    std::cout << "[Rank " << rank << "] About to call MPI_Finalize." << std::endl;
     MPI_Finalize();
-//    std::cout << "[Rank " << rank << "] MPI_Finalize completed." << std::endl;
 
     return 0;
 }
@@ -220,17 +215,9 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     }
 
     // create LBM object
-    if (rank == 0) {
-        //std::cout << "DEBUG: Creating LBM with dt/dx = " << (dt / dx) << std::endl;
-        //std::cout << "DEBUG: Expected lattice speed = " << (physical_speed * dt / dx) << std::endl;
-    }
     lbm = new LbmDQ(dim_x, dim_y, dim_z, dt / dx, rank, num_ranks, lattice_type);
 
-    // initialize simulation
-    int zmin = 0, zmax = dim_z - 1;
-
-    // NEW: Diamond-shaped (square rotated 45°) bluff body barriers
-    // Creates strong vortex shedding with extended transient behavior
+    // BARRIER OPTION ONE: Diamond-shaped (square rotated 45°) bluff body barriers
     barriers.clear();
 
     // Configuration parameters
@@ -239,7 +226,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     int diamond_size = std::max(5, (int)(dim_y / 8));       // Size based on domain height
 
     // Optional: Create multiple diamonds for more complex flow
-    bool use_multiple_diamonds = false;
+    bool use_multiple_diamonds = true;
 
     if (use_multiple_diamonds) {
         // Create three diamond obstacles at different positions
@@ -298,12 +285,11 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
                diamond_x_center, diamond_y_center);
     }
 
-    //// ALTERNATIVE: Square cylinder barriers for von Kármán vortex street
-    //// Uncomment this section and comment out the diamond barriers above to use square cylinders
+    //// BARRIER OPTION TWO: Square cylinder barriers for von Kármán vortex street
     //barriers.clear();
     //
     //// Configuration for square cylinder
-    //int square_x_center = std::max(10, (int)(dim_x / 6));  // Position at 1/6 of domain
+    //int square_x_center = std::max(10, (int)(dim_x / 5));  // Position at 1/5 of domain
     //int square_y_center = dim_y / 2;                       // Center vertically
     //int square_half_size = std::max(4, (int)(dim_y / 10)); // Half-size of square
     //
@@ -317,76 +303,12 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     //        }
     //    }
     //}
-    //
-    //if (rank == 0) {
-    //    printf("[INFO] Created square cylinder barrier\n");
-    //    printf("[INFO] Configuration: size=%dx%d, center=(%d,%d)\n",
-    //           2*square_half_size+1, 2*square_half_size+1, square_x_center, square_y_center);
-    //}
-
-
-    //// NEW: Two flat plates with gap (bluff body configuration)
-    //// Position close to inlet for maximum wake interaction
-    //barriers.clear();
-    //
-    //int plate_x_position = std::max(1, (int)(dim_x / 8));  // Close to inlet (1/8 of domain), minimum x=1
-    //int plate_thickness = 2;                               // Thickness of each plate
-    //int gap_size = std::max(2, (int)(dim_y / 6));          // Gap between plates (1/6 of domain height), minimum gap=
-
-    //// Ensure gap size is even for symmetric positioning
-    //if (gap_size % 2 != 0) gap_size++;
-    //
-    //// Calculate plate positions
-    //int gap_center = dim_y / 2;
-    //int gap_half = gap_size / 2;
-    //
-    //// Top plate: from gap center + gap_half to top of domain
-    //int top_plate_ymin = gap_center + gap_half;
-    //int top_plate_ymax = dim_y - 1;
-    //
-    //// Bottom plate: from bottom of domain to gap center - gap_half
-    //int bottom_plate_ymin = 0;
-    //int bottom_plate_ymax = gap_center - gap_half;
-    //
-    //// Safety checks to ensure valid configuration
-    //if (top_plate_ymin > top_plate_ymax) {
-    //    if (rank == 0) printf("[WARNING] Top plate invalid, adjusting gap size\n");
-    //    gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
-    //    gap_half = gap_size / 2;
-    //    top_plate_ymin = gap_center + gap_half;
-    //    bottom_plate_ymax = gap_center - gap_half;
-    //}
-    //
-    //if (bottom_plate_ymin > bottom_plate_ymax) {
-    //    if (rank == 0) printf("[WARNING] Bottom plate invalid, adjusting gap size\n");
-    //    gap_size = std::min(gap_size, (int)(dim_y / 3));  // Reduce gap size
-    //    gap_half = gap_size / 2;
-    //    top_plate_ymin = gap_center + gap_half;
-    //    bottom_plate_ymax = gap_center - gap_half;
-    //}
-    //
-    //// Create top plate (spans full z-direction)
-    //for (int thickness = 0; thickness < plate_thickness; thickness++) {
-    //    int x_pos = plate_x_position + thickness;
-    //    if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
-    //        barriers.push_back(new Barrier3D(x_pos, x_pos, top_plate_ymin, top_plate_ymax, zmin, zmax));
-    //    }
-    //}
-    //
-    //// Create bottom plate (spans full z-direction)
-    //for (int thickness = 0; thickness < plate_thickness; thickness++) {
-    //    int x_pos = plate_x_position + thickness;
-    //    if (x_pos < (int)dim_x) {  // Ensure we don't go beyond domain
-    //        barriers.push_back(new Barrier3D(x_pos, x_pos, bottom_plate_ymin, bottom_plate_ymax, zmin, zmax));
-    //    }
-    //}
-
    
-    //// TRANSIENT-EXTENDING BARRIERS: Multiple cylinders for complex wake interactions
+    //// BARRIER OPTION THREE: Multiple cylinders for complex wake interactions
     //barriers.clear();
     //
     //// Add multiple cylindrical obstacles to create extended transient behavior
-    //int cylinder_radius = 3; // Radius for cylindrical obstacles
+    //int cylinder_radius = 10; // Radius for cylindrical obstacles
     //
     //// First cylinder at 1/4 length
     //double cx1 = dim_x / 4.0;
@@ -394,11 +316,11 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     //
     //// Second cylinder at 1/2 length, offset vertically
     //double cx2 = dim_x / 2.0;
-    //double cy2 = dim_y / 3.0;
+    //double cy2 = dim_y / 4.0;
     //
     //// Third cylinder at 3/4 length
     //double cx3 = 3.0 * dim_x / 4.0;
-    //double cy3 = 2.0 * dim_y / 3.0;
+    //double cy3 = 2.0 * dim_y / 4.0;
     //
     //// Create cylindrical obstacles (spanning full z-direction)
     //int cylinder1_count = 0, cylinder2_count = 0, cylinder3_count = 0;
@@ -432,25 +354,6 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     //    }
     //}
 
-    //// NEW barriers (central sphere)
-    //barriers.clear();
-    //// Add a central sphere barrier
-    //double cx = (dim_x - 1) / 2.0;
-    //double cy = (dim_y - 1) / 2.0;
-    //double cz = (dim_z - 1) / 2.0;
-    //int radius = std::min({dim_x, dim_y, dim_z}) / 5; // 1/5 of the smallest dimension
-    //for (int k = 0; k < (int)dim_z; ++k) {
-    //    for (int j = 0; j < (int)dim_y; ++j) {
-    //        for (int i = 0; i < (int)dim_x; ++i) {
-    //            double dx = i - cx;
-    //            double dy = j - cy;
-    //            double dz = k - cz;
-    //            if (dx*dx + dy*dy + dz*dz <= radius*radius) {
-    //                barriers.push_back(new Barrier3D(i, i, j, j, k, k));
-    //            }
-    //        }
-    //    }
-    //}
     lbm->initBarrier(barriers);
     lbm->initFluid(physical_speed);
     lbm->checkGuards();
@@ -460,7 +363,6 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
     // run simulation
     int t;
-    double time;
     int output_count = 0;
     double output_frequency = 1.0;  // Output every 1.0 seconds
     double next_output_time = 0.0;
@@ -468,7 +370,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
     // Timing variables
     std::chrono::high_resolution_clock::time_point start_time, end_time;
-    std::chrono::duration<double> collide_time(0), stream_time(0), bounceback_time(0), exchange_time(0);
+    std::chrono::duration<double> collide_time(0), stream_time(0), exchange_time(0);
     std::chrono::duration<double> total_iteration_time(0);
 
 #ifdef ASCENT_ENABLED
@@ -506,11 +408,15 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
             next_output_time = output_count * output_frequency;
         }
 
-	// Diagnostics and VTK/printouts every 1000/5000 steps
-        //printSimulationDiagnostics(t, rank, lbm, dt, dx, physical_density, time_steps);
-	
-	// Export velocity vectors for streamline visualization
+	// Export vorticity for visualization
+#if OUTPUT_VORTICITY
+        printSimulationDiagnostics(t, rank, lbm, dt, dx, physical_density, time_steps);
+#endif
+        
+        // Export velocity vectors for streamline visualization
+#if OUTPUT_VELOCITY
         exportVelocityDiagnostics(t, rank, num_ranks, lbm, dt, dx, physical_density, time_steps);
+#endif
 
 	// Time the entire iteration
         start_time = std::chrono::high_resolution_clock::now();
@@ -538,9 +444,6 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
 
 	auto exchange_end = std::chrono::high_resolution_clock::now();
         exchange_time += std::chrono::duration_cast<std::chrono::duration<double>>(exchange_end - exchange_start);
-
-	// Apply open boundary at outlet after all streaming and boundary exchange
-        //lbm->applyOutletOpenBoundary();
 
         end_time = std::chrono::high_resolution_clock::now();
         total_iteration_time += std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time);
