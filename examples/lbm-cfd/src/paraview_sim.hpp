@@ -314,6 +314,7 @@ void gatherVelocityComponents(int rank, int num_ranks, LbmDQ* lbm, float* vx_glo
     }
 }
 
+
 void sendVelocityToRank0(LbmDQ* lbm) {
     float* vx_local = lbm->getVelocityX();
     float* vy_local = lbm->getVelocityY();
@@ -329,15 +330,13 @@ void sendVelocityToRank0(LbmDQ* lbm) {
 
 inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps) {
     if (t % 1000 == 0 && t <= 5000) {
-	lbm->computeVorticity();
-
-        lbm->gatherDataOnRank0(LbmDQ::Vorticity);
+	  lbm->computeVorticity();
+    lbm->gatherDataOnRank0(LbmDQ::Vorticity);
         
         if (rank == 0) {
             char vts_filename[128];
             snprintf(vts_filename, sizeof(vts_filename), "paraview/simulation_state_t%05d.vts", t);
             exportSimulationStateToVTS(lbm, vts_filename, dt, dx, physical_density, time_steps);
-            //float* vorticity = lbm->getGatheredVorticity();
         }
     }
     //if (t % 1000 == 0 && t <= 5000) {
@@ -362,7 +361,7 @@ inline void exportVelocityDiagnostics(int t, int rank, int num_ranks, LbmDQ* lbm
             exportVelocityVectorsToVTS(rank, num_ranks, lbm, nullptr, dt, dx, physical_density, time_steps);
         }
     }
-    //if (t % 100 == 0 && t <= 5000) {
+    //if (t % 1000 == 0 && t <= 5000) {
     //    lbm->computeSpeed();
     //    lbm->gatherDataOnRank0(LbmDQ::Speed);
     //    if (rank == 0) {
