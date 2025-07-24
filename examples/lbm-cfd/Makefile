@@ -16,7 +16,7 @@ else
 CXX= mpic++
 MPIRUN= mpirun
 endif
-CXXFLAGS+= -std=c++14 -O3 -Wall -DOUTPUT_VORTICITY=$(OUTPUT_VORTICITY) -DOUTPUT_VELOCITY=$(OUTPUT_VELOCITY)
+CXXFLAGS+= -std=c++14 -O3 -Wall -Wno-sign-compare -DOUTPUT_VORTICITY=$(OUTPUT_VORTICITY) -DOUTPUT_VELOCITY=$(OUTPUT_VELOCITY)
 
 # Set application executable name
 APP= lbmcfd
@@ -28,10 +28,10 @@ BINDIR= bin
 
 # Simulation parameters (can be overridden)
 LATTICE ?= d3q19
-NPROCS ?= 1
+N ?= 1
 
 # MPI configuration (can be overridden for different systems)
-MPI_FLAGS ?=
+PPN ?=
 
 # Output configuration parameters
 OUTPUT_VORTICITY ?= 0
@@ -49,13 +49,7 @@ else
 	LIB= -lm
 endif
 
-# Link Ascent if ASCENT_DIR is set
-ifneq ($(ASCENT_DIR),)
-    include $(ASCENT_DIR)/share/ascent/ascent_config.mk
-    ASCENT_INC_FLAGS= $(ASCENT_INCLUDE_FLAGS)
-    ASCENT_LNK_FLAGS= $(ASCENT_LINK_RPATH) $(ASCENT_MPI_LIB_FLAGS)
-    CXXFLAGS += -DASCENT_ENABLED
-endif
+
 
 # Create output directories and set output file names
 ifeq ($(DETECTED_OS),Windows)
@@ -76,14 +70,14 @@ endif
 all: $(EXEC)
 
 $(EXEC): $(OBJS)
-	$(CXX) -o $@ $^ $(LIB) $(ASCENT_LNK_FLAGS)
+	$(CXX) -o $@ $^ $(LIB)
 
 ifeq ($(DETECTED_OS),Windows)
 $(OBJDIR)\\%.o: $(SRCDIR)\%.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $< $(INC) $(ASCENT_INC_FLAGS)
+	$(CXX) $(CXXFLAGS) -c -o $@ $< $(INC)
 else
 $(OBJDIR)/%.o: $(SRCDIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $< $(INC) $(ASCENT_INC_FLAGS)
+	$(CXX) $(CXXFLAGS) -c -o $@ $< $(INC)
 endif
 
 
@@ -92,12 +86,10 @@ ifeq ($(DETECTED_OS),Windows)
 clean:
 	if exist $(OBJDIR) rmdir /s /q $(OBJDIR)
 	if exist $(BINDIR) rmdir /s /q $(BINDIR)
-	del /q *.vts *.pvd 2>nul || echo No VTS/PVD files to clean in root
 	del /q paraview\*.vts paraview\*.pvd 2>nul || echo No VTS/PVD files to clean in paraview
 else
 clean:
 	rm -rf $(OBJDIR) $(BINDIR)
-	rm -f *.vts *.pvd
 	rm -f paraview/*.vts paraview/*.pvd
 	rm -f hostfile.tmp
 endif
@@ -117,23 +109,48 @@ help:
 	@echo ""
 	@echo "Parameters:"
 	@echo "  LATTICE={d3q15,d3q19,d3q27}  - Lattice model (default: $(LATTICE))"
-	@echo "  NPROCS=N                     - MPI processes (default: $(NPROCS))"
-	@echo "  MPI_FLAGS='flags'            - MPI runtime flags (default: none)"
+	@echo "  N=num                        - MPI processes (default: $(N))"
+	@echo "  PPN=num                      - Processes per node (default: auto)"
 	@echo "  OUTPUT_VORTICITY={0,1}       - Enable vorticity output (default: $(OUTPUT_VORTICITY))"
 	@echo "  OUTPUT_VELOCITY={0,1}        - Enable velocity vector output (default: $(OUTPUT_VELOCITY))"
 
 # Run simulation
 run: $(EXEC)
+	@echo ""
 	@echo "Starting LBM-CFD simulation..."
-	@echo "Parameters: $(NPROCS) processes, --$(LATTICE)"
-	@echo "MPI Command: $(MPIRUN) -n $(NPROCS) --hostfile hostfile.tmp $(MPI_FLAGS) $(EXEC) --$(LATTICE)"
-ifeq ($(DETECTED_OS),Windows)
-	$(MPIRUN) -n $(NPROCS) $(EXEC) --$(LATTICE)
-else
-	@echo "localhost" > hostfile.tmp
-	$(MPIRUN) -n $(NPROCS) --hostfile hostfile.tmp $(MPI_FLAGS) $(EXEC) --$(LATTICE)
-	@rm -f hostfile.tmp
+	@echo "Parameters: $(N) processes, --$(LATTICE)"
+ifneq ($(PPN),)
+	@echo "PPN: $(PPN) processes per node"
 endif
+ifeq ($(DETECTED_OS),Windows)
+	@echo "MPI Command: $(MPIRUN) -n $(N) $(EXEC) --$(LATTICE)"
+	$(MPIRUN) -n $(N) $(EXEC) --$(LATTICE)
+else
+ifneq ($(PPN),)
+	@if [ -n "$$PBS_NODEFILE" ]; then \
+		echo "Using PBS nodefile: $$PBS_NODEFILE"; \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE --ppn $(PPN) $(EXEC) --$(LATTICE)"; \
+		$(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE --ppn $(PPN) $(EXEC) --$(LATTICE); \
+	else \
+		echo "localhost" > hostfile.tmp; \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile hostfile.tmp --ppn $(PPN) $(EXEC) --$(LATTICE)"; \
+		$(MPIRUN) -n $(N) --hostfile hostfile.tmp --ppn $(PPN) $(EXEC) --$(LATTICE); \
+		rm -f hostfile.tmp; \
+	fi
+else
+	@if [ -n "$$PBS_NODEFILE" ]; then \
+		echo "Using PBS nodefile: $$PBS_NODEFILE"; \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE $(EXEC) --$(LATTICE)"; \
+		$(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE $(EXEC) --$(LATTICE); \
+	else \
+		echo "localhost" > hostfile.tmp; \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile hostfile.tmp $(EXEC) --$(LATTICE)"; \
+		$(MPIRUN) -n $(N) --hostfile hostfile.tmp $(EXEC) --$(LATTICE); \
+		rm -f hostfile.tmp; \
+	fi
+endif
+endif
+	@echo ""
 	@echo "Simulation completed."
 
 # Generate PVD files for ParaView (only if VTS files exist)
@@ -168,4 +185,4 @@ endif
 complete: all run pvd
 	@echo "Complete workflow finished!"
 	@echo "Ready for ParaView visualization."
-
+	@echo ""
