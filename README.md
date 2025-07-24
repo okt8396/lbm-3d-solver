@@ -1,37 +1,56 @@
-# Ascent-Trame
-Bridge for accessing Ascent extracts in a Trame application
+# LBM-CFD
 
+**Lattice-Boltzmann Method 3D Computational Fluid Dynamics Simulation**
 
-### MPI
-Install desired version of MPI (e.g. OpenMPI, MPICH, etc.)
+3D LBM simulation parallelized using MPI with ParaView visualization support
 
+## Simulation Time Stepping
 
-### Python Virtual Environment
+Unlike fixed time step simulations, this LBM-CFD implementation uses **adaptive time stepping** based on stability conditions:
+
+- **CFL Condition**: Ensures fluid doesn't move more than one grid cell per time step
+- **Diffusion Stability**: Prevents numerical instabilities in viscous flows  
+- **Automatic Selection**: The simulation automatically chooses the smaller (more restrictive) time step
+
+### Key Implications:
+- **Total simulation time varies** based on grid resolution and flow parameters
+- **Higher resolution** = smaller time steps = longer simulation time  
+- **Faster flows** = smaller time steps = more iterations needed
+- The simulation reports the calculated time step and total simulated time at startup
+
+## Prerequisites
+
+- **C++ Compiler**: g++ (Windows) or mpic++ (Linux/Unix/Mac OS)
+- **MPI**: OpenMPI/MPICH
+- **Python**: For ParaView file generation (optional)
+- **ParaView**: For visualization (optional)
+
+## Configuration Parameters
+
+| Parameter | Options | Default | Description |
+|-----------|---------|---------|-------------|
+| `LATTICE` | `d3q15`, `d3q19`, `d3q27` | `d3q19` | Lattice model |
+| `N` | Integer | `1` | Number of MPI processes |
+| `PPN` | Integer | Auto | Processes per node |
+| `OUTPUT_VELOCITY` | `0`, `1` | `0` | Enable velocity output |
+| `OUTPUT_VORTICITY` | `0`, `1` | `0` | Enable vorticity output |
+
+## Makefile Targets
+
+- `make all` - Compile application (default)
+- `make run` - Run simulation
+- `make pvd` - Generate ParaView files
+- `make complete` - Build + Run + Generate PVD
+- `make clean` - Remove compiled files
+
+## Building and Running
 ```
-cd lbm-cfd
-python -m venv ./.venv
-source .venv/bin/activate
-pip install setuptools
-pip install numpy
-pip install opencv-python
-pip install trame
-pip install trame-vuetify
-pip install trame-rca
-pip install --no-binary :all: --compile mpi4py
+cd examples/lbm-cfd
+make 
+make run N=<num_procs> PPN=<processes_per_node> LATTICE=<lattice_model>
 ```
 
-
-### Ascent Install and Build (with MPI)
+### Complete Workflow with ParaView Output Files
 ```
-git clone --recursive https://github.com/alpine-dav/ascent.git
-cd ascent
+make complete N=<num_procs> PPN=<processes_per_node> LATTICE=<lattice_model> OUTPUT_VELOCITY=1 OUTPUT_VORTICITY=1
 ```
-
-Edit "./scripts/build_ascent/build_ascent.sh" to change mfem version from 4.6 to 4.7
-
-Make sure that the Python virtual environment created in the previous step is activated
-
-```
-env enable_python=ON enable_mpi=ON prefix=<ascent_install_dir> ./scripts/build_ascent/build_ascent.sh
-```
-

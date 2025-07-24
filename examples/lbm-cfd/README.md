@@ -1,41 +1,26 @@
-# LBM-CFD
+# Visualization
 
-Lattice-Boltzmann Method 2D Computational Fluid Dynamics Simulation
+The simulation generates VTS files containing either vorticity or velocity data depending on the build flags. The files can be found in the `paraview/` directory. Use `make pvd` after `make run` to create ParaView-compatible PVD files, then load them in ParaView.
 
-Code is parallelized using MPI
-
-
-### Build LBM-CFD application
-With Ascent support:
+There are two options to do this visualization:
+## Option #1: Local Visualization
+download the files to your local machine and open them directly in ParaView
 ```
-env ASCENT_DIR=<ascent_install_dir>/install/ascent-checkout make
+scp -r <username>@<hostname>.alcf.anl.gov://<path_to_remote_paraview_directory> <path_to_local_directory>
 ```
 
-Without Ascent support:
+## Option #2: Remote Visualization using Sophia's ParaView Modules
+run the following on a Sophia compute node:
 ```
-make
+ip route get 8.8.8.8
 ```
-
-
-### Run Trame server
-Make sure that the Python virtual environment created for Ascent install is activated
-
+copy the IP address from the above command, and run the following in a new terminal:
 ```
-python trame_app.py --host 0.0.0.0 --port <port> --server --timeout 0
+ssh -L 11111:<remote_ip>:11111 <username>@sophia.alcf.anl.gov
 ```
-
-
-### Run LBM-CFD application
-Make sure that the Python virtual environment created for Ascent install is activated
-
-Ensure Trame server is up and running, and you have opened the web page to the Trame application
-
-Then run the following (note: you may need to specify different versions for Python and Conduit - check your install)
+back on the Sophia compute node:
 ```
-PYTHON_SITE_PKG="<python_virtual_env_path>/lib/python3.12/site-packages"
-ASCENT_DIR="<ascent_install_dir>/install"
-export PYTHONPATH=$PYTHONPATH:PYTHON_SITE_PKG:$ASCENT_DIR/ascent-checkout/python-modules/:$ASCENT_DIR/conduit-v0.9.2/python-modules/
-
-mpiexec -np <num_procs> ./bin/lbmcfd
+module load visualization/paraview/paraview-5.13.0-RC1-EGL
+pvserver --server-port=11111
 ```
-
+then connect to localhost:11111 in ParaView's "Connect" dialog box

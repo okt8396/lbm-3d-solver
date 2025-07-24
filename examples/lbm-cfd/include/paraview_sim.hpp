@@ -25,8 +25,6 @@ void exportSimulationStateToVTS(LbmDQ* lbm, const char* filename, double dt, dou
     const char* scalar_name = "vorticity";
     double value_scale = 1.0;
     double speed_scale = dx / dt;
-    //printf("[DEBUG] VTS scaling: dx=%.6f, dt=%.6f, speed_scale=%.6f\n", dx, dt, speed_scale);
-    //printf("[DEBUG] Expected conversion: 0.0015 lattice -> %.6f physical\n", 0.0015 * speed_scale);
     if (std::string(scalar_name) == "speed_m_per_s") {
         value_scale = speed_scale;
     } else if (std::string(scalar_name) == "density") {
@@ -83,27 +81,6 @@ void exportSimulationStateToVTS(LbmDQ* lbm, const char* filename, double dt, dou
     
     fclose(fp);
     printf("VTS export completed: %s\n", filename);
-}
-
-inline void printMeanSpeeds(int t, LbmDQ* lbm, float* speed) {
-    int N = lbm->getTotalDimX() * lbm->getTotalDimY() * lbm->getTotalDimZ();
-    double sum = 0.0;
-    for (int i = 0; i < N; ++i) sum += speed[i];
-    printf("[t=%d] Mean vorticity: %.8f\n", t, sum / N);
-    uint8_t* barrier = lbm->getBarrier();
-    int total_x = lbm->getTotalDimX();
-    int total_y = lbm->getTotalDimY();
-    int total_z = lbm->getTotalDimZ();
-    double sum_plane = 0.0;
-    int count_plane = 0;
-    for (int k = 0; k < total_z; ++k) {
-        for (int j = 0; j < total_y; ++j) {
-            int idx = 1 + total_x * (j + total_y * k);
-            if (barrier && barrier[idx]) continue;
-            sum_plane += speed[idx];
-            count_plane++;
-        }
-    }
 }
 
 void exportVelocityVectorsToVTS(int rank, int num_ranks, LbmDQ* lbm, const char* filename, double dt, double dx, double physical_density, uint32_t time_steps) {
@@ -329,9 +306,9 @@ void sendVelocityToRank0(LbmDQ* lbm) {
 }
 
 inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps) {
-    if (t % 1000 == 0 && t <= 5000) {
-	  lbm->computeVorticity();
-    lbm->gatherDataOnRank0(LbmDQ::Vorticity);
+    if (t % 500 == 0 && t <= 10000) {
+        lbm->computeVorticity();
+        lbm->gatherDataOnRank0(LbmDQ::Vorticity);
         
         if (rank == 0) {
             char vts_filename[128];
@@ -339,19 +316,11 @@ inline void printSimulationDiagnostics(int t, int rank, LbmDQ* lbm, double dt, d
             exportSimulationStateToVTS(lbm, vts_filename, dt, dx, physical_density, time_steps);
         }
     }
-    //if (t % 1000 == 0 && t <= 5000) {
-    //    lbm->computeVorticity();
-    //    lbm->gatherDataOnRank0(LbmDQ::Vorticity);
-    //    if (rank == 0) {
-    //        float* vorticity = lbm->getGatheredVorticity();
-    //        printMeanSpeeds(t, lbm, vorticity);
-    //    }
-    //}
 }
 
 inline void exportVelocityDiagnostics(int t, int rank, int num_ranks, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps) {
     // Export velocity vectors for streamline visualization
-    if (t % 1000 == 0 && t <= 5000) {
+    if (t % 500 == 0 && t <= 10000) {
         if (rank == 0) {
             char velocity_filename[128];
             snprintf(velocity_filename, sizeof(velocity_filename), "paraview/velocity_vectors_t%05d.vts", t);
@@ -361,14 +330,6 @@ inline void exportVelocityDiagnostics(int t, int rank, int num_ranks, LbmDQ* lbm
             exportVelocityVectorsToVTS(rank, num_ranks, lbm, nullptr, dt, dx, physical_density, time_steps);
         }
     }
-    //if (t % 1000 == 0 && t <= 5000) {
-    //    lbm->computeSpeed();
-    //    lbm->gatherDataOnRank0(LbmDQ::Speed);
-    //    if (rank == 0) {
-    //        float* speed = lbm->getGatheredSpeed();
-    //        printMeanSpeeds(t, lbm, speed);
-    //    }
-    //}
 }
 
 #endif // PARAVIEW_SIM_HPP 

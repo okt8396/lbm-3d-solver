@@ -878,11 +878,6 @@ void LbmDQ::collide(double viscosity, int t)
 {
 	int i, j, k, idx;
         double omega = 1.0 / (3.0 * viscosity + 0.5); //reciprocal of relaxation time
-	static bool omega_printed = false;
-	if (!omega_printed && rank == 0) {
-	    printf("[DEBUG] viscosity=%f, omega=%f\n", viscosity, omega);
-	    omega_printed = true;
-	}
 	for (k = 0; k < dim_z; k++)
 	{
 		for (j = 0; j < dim_y; j++)
