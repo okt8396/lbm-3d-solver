@@ -114,38 +114,47 @@ help:
 	@echo "  OUTPUT_VORTICITY={0,1}       - Enable vorticity output (default: $(OUTPUT_VORTICITY))"
 	@echo "  OUTPUT_VELOCITY={0,1}        - Enable velocity vector output (default: $(OUTPUT_VELOCITY))"
 
+# Build command-line arguments
+OUTPUT_FLAGS=
+ifeq ($(OUTPUT_VORTICITY),1)
+	OUTPUT_FLAGS += --output-vorticity
+endif
+ifeq ($(OUTPUT_VELOCITY),1)
+	OUTPUT_FLAGS += --output-velocity
+endif
+
 # Run simulation
 run: $(EXEC)
 	@echo ""
 	@echo "Starting LBM-CFD simulation..."
-	@echo "Parameters: $(N) processes, --$(LATTICE)"
+	@echo "Parameters: $(N) processes, --$(LATTICE) $(OUTPUT_FLAGS)"
 ifneq ($(PPN),)
 	@echo "PPN: $(PPN) processes per node"
 endif
 ifeq ($(DETECTED_OS),Windows)
-	@echo "MPI Command: $(MPIRUN) -n $(N) $(EXEC) --$(LATTICE)"
-	$(MPIRUN) -n $(N) $(EXEC) --$(LATTICE)
+	@echo "MPI Command: $(MPIRUN) -n $(N) $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS)"
+	$(MPIRUN) -n $(N) $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS)
 else
 ifneq ($(PPN),)
 	@if [ -n "$$PBS_NODEFILE" ]; then \
 		echo "Using PBS nodefile: $$PBS_NODEFILE"; \
-		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE --ppn $(PPN) $(EXEC) --$(LATTICE)"; \
-		$(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE --ppn $(PPN) $(EXEC) --$(LATTICE); \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE --ppn $(PPN) $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS)"; \
+		$(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE --ppn $(PPN) $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS); \
 	else \
 		echo "localhost" > hostfile.tmp; \
-		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile hostfile.tmp --ppn $(PPN) $(EXEC) --$(LATTICE)"; \
-		$(MPIRUN) -n $(N) --hostfile hostfile.tmp --ppn $(PPN) $(EXEC) --$(LATTICE); \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile hostfile.tmp --ppn $(PPN) $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS)"; \
+		$(MPIRUN) -n $(N) --hostfile hostfile.tmp --ppn $(PPN) $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS); \
 		rm -f hostfile.tmp; \
 	fi
 else
 	@if [ -n "$$PBS_NODEFILE" ]; then \
 		echo "Using PBS nodefile: $$PBS_NODEFILE"; \
-		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE $(EXEC) --$(LATTICE)"; \
-		$(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE $(EXEC) --$(LATTICE); \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS)"; \
+		$(MPIRUN) -n $(N) --hostfile $$PBS_NODEFILE $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS); \
 	else \
 		echo "localhost" > hostfile.tmp; \
-		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile hostfile.tmp $(EXEC) --$(LATTICE)"; \
-		$(MPIRUN) -n $(N) --hostfile hostfile.tmp $(EXEC) --$(LATTICE); \
+		echo "MPI Command: $(MPIRUN) -n $(N) --hostfile hostfile.tmp $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS)"; \
+		$(MPIRUN) -n $(N) --hostfile hostfile.tmp $(EXEC) --$(LATTICE) $(OUTPUT_FLAGS); \
 		rm -f hostfile.tmp; \
 	fi
 endif
