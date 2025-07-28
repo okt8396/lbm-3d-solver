@@ -7,6 +7,7 @@
 #include <string>
 #include <cstring>
 
+
 #include "lbm_mpi.hpp"
 #include "paraview_sim.hpp"
 
@@ -35,7 +36,6 @@ int main(int argc, char **argv) {
     uint32_t dim_y = 160;
     uint32_t dim_z = 160;
     uint32_t time_steps = 10000;
-
 
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;

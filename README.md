@@ -83,7 +83,8 @@ Copy the name of the assigned compute node, and run the following in a new termi
 ```
 ssh -L 11111:<node_name>:11111 <username>@<hostname>.alcf.anl.gov
 ```
-Back on the compute node, start the ParaView server**:
+Back on the compute node, start the ParaView server*:
+
 ```
 module use /soft/modulefiles
 module load visualization/paraview/paraview-5.13.3
@@ -92,7 +93,6 @@ pvserver --server-port=11111
 Then connect to localhost:11111 in ParaView's "Connect" dialog box
 
 #
-
 
 *Make sure locally installed version of ParaView matches the version used on the compute node
 
