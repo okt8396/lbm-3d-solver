@@ -822,12 +822,19 @@ void LbmDQ::initFluid(double physical_speed)
     for (k = 0; k < dim_z; k++) {
         for (j = 0; j < dim_y; j++) {
             for (i = 0; i < dim_x; i++) {
+                int idx = idx3D(i, j, k);
+                
+                // Skip barrier locations - barriers are already in place
+                if (barrier[idx] == 1) {
+                    continue;
+                }
+                
 	    	if ((offset_x + i) == 0) {
                     setEquilibrium(i, j, k, speed, 0.0, 0.0, 1.0); // Inlet face: flow in +X
                 } else {
                     setEquilibrium(i, j, k, 0.0, 0.0, 0.0, 1.0); // Rest of domain: at rest
                 }
-		vorticity[idx3D(i, j, k)] = 0.0;
+		vorticity[idx] = 0.0;
             }
         }
     }

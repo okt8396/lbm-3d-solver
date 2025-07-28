@@ -5,11 +5,12 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+#include <cstring>
 
 #include "lbm_mpi.hpp"
 #include "paraview_sim.hpp"
 
-void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, LbmDQ::LatticeType lattice_type);
+void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, LbmDQ::LatticeType lattice_type, bool output_vorticity, bool output_velocity);
 void exportSimulationStateToVTS(LbmDQ* lbm, const char* filename, double dt, double dx, double physical_density, uint32_t time_steps);
 void exportVelocityDiagnostics(int t, int rank, int num_ranks, LbmDQ* lbm, double dt, double dx, double physical_density, uint32_t time_steps);
 
@@ -33,11 +34,21 @@ int main(int argc, char **argv) {
     uint32_t dim_x = 160;
     uint32_t dim_y = 160;
     uint32_t dim_z = 160;
-    uint32_t time_steps = 5000;
+    uint32_t time_steps = 10000;
 
 
     LbmDQ::LatticeType lattice_type;
     bool model_specified = false;
+    bool output_vorticity = false;
+    bool output_velocity = false;
+
+    // Check for compile-time defaults (for Makefile compatibility)
+#ifdef OUTPUT_VORTICITY
+    output_vorticity = (OUTPUT_VORTICITY != 0);
+#endif
+#ifdef OUTPUT_VELOCITY
+    output_velocity = (OUTPUT_VELOCITY != 0);
+#endif
 
     // parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -53,6 +64,26 @@ int main(int argc, char **argv) {
 	    lattice_type = LbmDQ::D3Q27;
 	    model_specified = true;
 	}
+	else if (strcmp(argv[i], "--output-vorticity") == 0) {
+	    output_vorticity = true;
+	}
+	else if (strcmp(argv[i], "--output-velocity") == 0) {
+	    output_velocity = true;
+	}
+	else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+	    if (rank == 0) {
+		printf("Usage: %s [OPTIONS]\n", argv[0]);
+		printf("Options:\n");
+		printf("  --d3q15              Use D3Q15 lattice model\n");
+		printf("  --d3q19              Use D3Q19 lattice model\n");
+		printf("  --d3q27              Use D3Q27 lattice model\n");
+		printf("  --output-vorticity   Enable vorticity output to VTS files\n");
+		printf("  --output-velocity    Enable velocity vector output to VTS files\n");
+		printf("  --help, -h           Show this help message\n");
+	    }
+	    MPI_Finalize();
+	    return 0;
+	}
     }
 
     if (!model_specified) {
@@ -67,15 +98,17 @@ int main(int argc, char **argv) {
         std::cout << "\nLBM-CFD> running with " << num_ranks << " processes" << std::endl;
         std::cout << "LBM-CFD> resolution=" << dim_x << "x" << dim_y << "x" << dim_z << ", time steps=" << time_steps << std::endl;
         std::cout << "LBM-CFD> using " << (lattice_type == LbmDQ::D3Q15 ? "D3Q15" : (lattice_type == LbmDQ::D3Q19 ? "D3Q19" : "D3Q27")) << " lattice model" << std::endl;
+	std::cout << "LBM-CFD> output options: vorticity=" << (output_vorticity ? "enabled" : "disabled")
+                  << ", velocity=" << (output_velocity ? "enabled" : "disabled") << std::endl;
     }
 
     // Run simulation
-    runLbmCfdSimulation(rank, num_ranks, dim_x, dim_y, dim_z, time_steps, lattice_type);
+    runLbmCfdSimulation(rank, num_ranks, dim_x, dim_y, dim_z, time_steps, lattice_type, output_vorticity, output_velocity);
     MPI_Finalize();
     return 0;
 }
 
-void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, LbmDQ::LatticeType lattice_type)
+void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y, uint32_t dim_z, uint32_t time_steps, LbmDQ::LatticeType lattice_type, bool output_vorticity, bool output_velocity)
 {
     // simulate corn syrup at 25 C in a 2 m pipe, moving 0.25 m/s
     double physical_density = 1380.0;     // kg/m^3
@@ -238,7 +271,7 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
     // run simulation
     int t;
     int output_count = 0;
-    double output_frequency = 0.5;  // Output simulation time step progress every 1s
+    double output_frequency = 0.5;  // Output simulation time step progress at specified interval
     double next_output_time = 0.0;
     uint8_t stable, all_stable = 0;
 
@@ -271,14 +304,14 @@ void runLbmCfdSimulation(int rank, int num_ranks, uint32_t dim_x, uint32_t dim_y
         }
 
 	// Export vorticity for visualization
-#if OUTPUT_VORTICITY
-        printSimulationDiagnostics(t, rank, lbm, dt, dx, physical_density, time_steps);
-#endif
+	if (output_vorticity) {
+            printSimulationDiagnostics(t, rank, lbm, dt, dx, physical_density, time_steps);
+        }
         
         // Export velocity vectors for streamline visualization
-#if OUTPUT_VELOCITY
-        exportVelocityDiagnostics(t, rank, num_ranks, lbm, dt, dx, physical_density, time_steps);
-#endif
+        if (output_velocity) {
+            exportVelocityDiagnostics(t, rank, num_ranks, lbm, dt, dx, physical_density, time_steps);
+        }
 
 	// Time the entire iteration
         start_time = std::chrono::high_resolution_clock::now();
