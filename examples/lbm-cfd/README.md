@@ -1,4 +1,4 @@
-# LBM-CFD (3D)
+# 3D LBM-CFD
 
 ### Lattice-Boltzmann Method Computational Fluid Dynamics Simulation
 
@@ -15,11 +15,7 @@ This LBM-CFD implementation uses adaptive time stepping based on stability condi
 - **CFL Condition**: Ensures fluid doesn't move more than one grid cell per time step
 - **Diffusion Stability**: Prevents numerical instabilities in viscous flows  
 - **Automatic Selection**: The simulation automatically chooses the smaller (more restrictive) time step
-
-#### Key Implications:
-- **Total simulation time varies** based on grid resolution and flow parameters
-- **Higher resolution** = smaller time steps = longer simulation time  
-- **Faster flows** = smaller time steps = more iterations needed
+- **Simulated time:** Varies automatically based on grid resolution and flow parameters
 
 ## Building and Running
 
@@ -34,7 +30,7 @@ Note:  Directions for running the simulation are based on Cray MPI systems on Cr
 
 ### Command-Line Arguments
 
-When running the executable directly, use these command-line arguments:
+When running the executable directly, use these command-line arguments. One lattice model must be specified
 
 - `--d3q15` - Use D3Q15 lattice model
 - `--d3q19` - Use D3Q19 lattice model
@@ -83,7 +79,7 @@ Copy the name of the assigned compute node, and run the following in a new termi
 ```
 ssh -L 11111:<node_name>:11111 <username>@<hostname>.alcf.anl.gov
 ```
-Back on the compute node, start the ParaView server**:
+Back on the compute node, start the ParaView server:
 ```
 module use /soft/modulefiles
 module load visualization/paraview/paraview-5.13.3
