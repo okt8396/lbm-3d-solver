@@ -32,9 +32,9 @@ int main(int argc, char **argv) {
     }
 
 
-    uint32_t dim_x = 160;
-    uint32_t dim_y = 160;
-    uint32_t dim_z = 160;
+    uint32_t dim_x = 400;
+    uint32_t dim_y = 128;
+    uint32_t dim_z = 128;
     uint32_t time_steps = 10000;
 
     LbmDQ::LatticeType lattice_type;
