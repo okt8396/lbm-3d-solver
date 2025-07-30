@@ -1,3 +1,0 @@
-# This file ensures the paraview directory is tracked by Git
-# VTS and PVD files are generated here during simulation runs
-# The directory is cleaned by 'make clean' but this file remains
