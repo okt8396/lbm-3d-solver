@@ -1,4 +1,4 @@
-# 3D LBM-CFD
+# LBM-CFD-3D
 
 ### Lattice-Boltzmann Method Computational Fluid Dynamics Simulation
 
@@ -40,9 +40,9 @@ When running the executable directly, use these command-line arguments. One latt
 
 ### Run simulation (using command line arguments)
 ```
-cd examples/lbm-cfd
+cd examples/lbm-cfd-3d
 make 
-mpiexec -n <num_procs> -ppn <procs_per_node> ./bin/lbm-cfd --<lattice_model> --<vts_output_arguments>
+mpiexec -n <num_procs> -ppn <procs_per_node> ./bin/lbmcfd3d --<lattice_model> --<vts_output_arguments>
 ```
 
 ### Makefile Commands
@@ -57,7 +57,7 @@ mpiexec -n <num_procs> -ppn <procs_per_node> ./bin/lbm-cfd --<lattice_model> --<
 ### Alternative: Complete Workflow with ParaView Output Files
 
 ```
-cd examples/lbm-cfd
+cd examples/lbm-cfd-3d
 make complete N=<num_procs> PPN=<procs_per_node> LATTICE=<lattice_model> OUTPUT_VELOCITY=1 OUTPUT_VORTICITY=1
 ```
 
